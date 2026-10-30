@@ -14,8 +14,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <!-- JSZip for Surgical OpenXML (.xlsx) In-Place Binary Manipulation -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <!-- html5-qrcode for Mobile Chrome Environment Camera Barcode Scanning -->
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -68,7 +66,7 @@
       border-spacing: 0;
     }
 
-    /* Clean up html5-qrcode video element on mobile */
+    /* Keep the native camera preview correctly sized on mobile */
     #fflz-barcode-reader video {
       border-radius: 1.25rem;
       width: 100% !important;
@@ -228,8 +226,125 @@
     }
   </style>
 
+
+  <!-- FINAL POLISH: accessibility, responsive ergonomics, and consistent premium surfaces. -->
+  <style id="uis-final-polish">
+    :root {
+      --uis-focus: #65e6c5;
+      --uis-shadow: 0 22px 70px rgba(0, 0, 0, .34);
+      --uis-glass: rgba(13, 25, 33, .82);
+    }
+    html { scroll-padding-top: 84px; }
+    body { min-height: 100svh; }
+    .uis-skip-link {
+      position: fixed; z-index: 200; top: 10px; left: 10px;
+      transform: translateY(-160%); padding: 11px 15px; border-radius: 12px;
+      color: #06231e; background: #8be7ce; font-weight: 750; font-size: 13px;
+      box-shadow: var(--uis-shadow); transition: transform .18s ease;
+    }
+    .uis-skip-link:focus { transform: translateY(0); }
+    #main-content:focus { outline: none; }
+    ::selection { background: rgba(56, 214, 176, .28); color: #f3fffb; }
+
+    /* Shared surface language across dynamically rendered panels and dialogs. */
+    .chatgpt-card, #secondary-stage-title, #camera-scanner-panel > div,
+    #main-view-container > section, #main-view-container > div {
+      -webkit-backdrop-filter: blur(16px);
+    }
+    #main-view-container .rounded-xl,
+    #main-view-container .rounded-2xl,
+    #main-view-container .rounded-3xl {
+      border-color: rgba(148, 163, 184, .16);
+    }
+    #main-view-container h1, #main-view-container h2,
+    #main-view-container h3 { letter-spacing: -.035em; }
+    #main-view-container h1 { line-height: 1.15; }
+
+    /* Make controls feel deliberate without changing their handlers or values. */
+    button, [role="button"], input, select, textarea { -webkit-tap-highlight-color: transparent; }
+    button:not(:disabled), [role="button"] { user-select: none; }
+    button:focus-visible, a:focus-visible, [role="button"]:focus-visible,
+    input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--uis-focus) !important;
+      outline-offset: 3px !important;
+    }
+    button:not(:disabled):hover { filter: brightness(1.07); }
+    button:disabled { opacity: .48; filter: saturate(.65); }
+    input[type="checkbox"], input[type="radio"] { accent-color: #38d6b0; }
+    select { color-scheme: dark; }
+    option { background: #101b23; color: #e8f0f4; }
+
+    /* Spreadsheet ergonomics: readable headers, stable edges, and horizontal scrolling. */
+    #virtual-worksheet-scroll {
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: #38515c transparent;
+    }
+    #virtual-worksheet-scroll table { font-variant-numeric: tabular-nums; }
+    #virtual-worksheet-scroll thead { position: sticky; top: 0; z-index: 5; }
+    #virtual-worksheet-scroll th { box-shadow: inset 0 -1px rgba(148,163,184,.16); }
+    #virtual-worksheet-scroll td, #virtual-worksheet-scroll th { max-width: 360px; }
+
+    /* Dialogs and transient feedback get consistent depth and mobile-safe sizing. */
+    #disambiguation-modal, #new-row-modal {
+      padding-top: max(16px, env(safe-area-inset-top));
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+    }
+    #disambiguation-modal > div, #new-row-modal > div {
+      max-height: min(88svh, 820px); overflow-y: auto;
+      border-radius: 22px !important;
+      box-shadow: 0 30px 100px rgba(0,0,0,.55);
+    }
+    #toast-container {
+      bottom: max(20px, env(safe-area-inset-bottom));
+      right: max(20px, env(safe-area-inset-right));
+      border-radius: 16px !important;
+    }
+
+    /* Responsive top bar: retain essential actions on narrow devices. */
+    @media (max-width: 520px) {
+      header.sticky { gap: 4px; }
+      header.sticky > div:first-child { flex: 0 0 auto; }
+      header.sticky > div:last-child { flex: 0 0 auto; }
+      header.sticky > div:last-child button { min-height: 38px; }
+      header.sticky select { max-width: 34vw !important; padding-left: 8px !important; padding-right: 8px !important; }
+      #main-content { min-height: calc(100svh - 60px); }
+      .uis-skip-link { font-size: 12px; }
+      #toast-container { left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); max-width: none; }
+      #disambiguation-modal > div, #new-row-modal > div { padding: 16px !important; }
+    }
+    @media (max-width: 360px) {
+      header.sticky > div:last-child button:first-child span { display: none; }
+      header.sticky > div:last-child button { padding-left: 9px !important; padding-right: 9px !important; }
+      header.sticky select { max-width: 29vw !important; }
+    }
+    @media (min-width: 1100px) {
+      main.max-w-3xl { max-width: min(100% - 48px, 1320px) !important; }
+      #main-view-container { min-width: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto !important; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+    @media print {
+      body { background: #fff !important; color: #111 !important; }
+      header, #sidebar-drawer, #drawer-backdrop, #toast-container,
+      #drop-import-overlay, .uis-skip-link { display: none !important; }
+      main { max-width: 100% !important; padding: 0 !important; }
+    }
+
+    .virtual-grid-row > td {
+      height: 88px;
+      max-height: 88px;
+      overflow: hidden;
+      vertical-align: middle;
+    }
+  </style>
+
 </head>
 <body class="min-h-screen bg-[#0d0d0d] text-[#ececec] flex flex-col selection:bg-emerald-500/30 selection:text-emerald-200 overflow-x-hidden">
+
+  <a class="uis-skip-link" href="#main-content">Skip to workspace</a>
 
   <!-- Drag-and-drop Excel import affordance -->
   <div id="drop-import-overlay" class="fixed inset-0 z-[100] flex items-center justify-center bg-emerald-950/85 backdrop-blur-sm border-4 border-dashed border-emerald-400/80" aria-hidden="true">
@@ -310,26 +425,6 @@
       </div>
     </div>
 
-    <!-- Drawer Bottom Actions (Import / Export / Reset Reference) -->
-    <div class="p-3.5 border-t border-white/10 bg-[#101010] space-y-2">
-      <div class="grid grid-cols-2 gap-2">
-        <button
-          onclick="document.getElementById('file-upload-input').click(); app.toggleSidebarDrawer(false);"
-          class="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium bg-[#212121] hover:bg-[#2a2a2a] text-white border border-white/10 transition cursor-pointer"
-        >
-          <i data-lucide="upload" class="w-3.5 h-3.5 text-emerald-400"></i>
-          <span>Import .xlsx</span>
-        </button>
-
-      </div>
-      <button
-        onclick="app.handleRunExportAndVerify(true); app.toggleSidebarDrawer(false);"
-        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-white hover:bg-neutral-200 text-black transition shadow-lg cursor-pointer"
-      >
-        <i data-lucide="download" class="w-4 h-4"></i>
-        <span>Export Updated Excel (.xlsx)</span>
-      </button>
-    </div>
   </aside>
 
   <!-- ====================================================================== -->
@@ -404,7 +499,7 @@
   <!-- ====================================================================== -->
   <!-- MAIN CENTER STAGE: CHATGPT MOBILE 2026 SCANNER & CONVERSATIONAL FEED -->
   <!-- ====================================================================== -->
-  <main class="flex-1 flex flex-col max-w-3xl w-full mx-auto px-3 sm:px-5 pt-3 pb-36">
+  <main id="main-content" tabindex="-1" class="flex-1 flex flex-col max-w-3xl w-full mx-auto px-3 sm:px-5 pt-3 pb-36">
 
     <!-- 1. PRIMARY SCANNER STAGE (Default Home Interface) -->
     <div id="scanner-home-stage" class="flex-1 flex flex-col justify-between space-y-4">
@@ -544,26 +639,6 @@
         onsubmit="app.handleManualBarcodeSubmit(event)"
         class="chatgpt-pill-shadow bg-[#212121] border border-white/10 rounded-[28px] p-1.5 pl-2 flex items-center gap-1.5"
       >
-        <!-- Import Spreadsheet (+) Attachment Button Inside Composer Pill (ChatGPT 2026 Style) -->
-        <button
-          type="button"
-          onclick="document.getElementById('file-upload-input').click()"
-          title="Import Excel Workbook (.xlsx)"
-          class="w-9 h-9 rounded-full bg-[#2f2f2f] hover:bg-[#3a3a3a] text-emerald-400 flex items-center justify-center shrink-0 transition cursor-pointer"
-        >
-          <i data-lucide="plus" class="w-4 h-4"></i>
-        </button>
-
-        <!-- Camera Quick-Launch Button Inside Pill -->
-        <button
-          type="button"
-          onclick="app.toggleCameraScanner()"
-          title="Open Camera Barcode Scanner"
-          class="w-9 h-9 rounded-full bg-[#2f2f2f] hover:bg-[#3a3a3a] text-white flex items-center justify-center shrink-0 transition cursor-pointer"
-        >
-          <i data-lucide="camera" class="w-4 h-4"></i>
-        </button>
-
         <!-- Barcode / Code Input -->
         <input
           id="manual-barcode-input"
@@ -1863,8 +1938,8 @@
       // Virtualized worksheet rendering: only a small window of rows is mounted.
       gridScrollTop: 0,
       gridStartIndex: 0,
-      gridRowHeight: 72,
-      gridWindowSize: 100000,
+      gridRowHeight: 88,
+      gridOverscan: 10,
       gridZoom: 1,
       gridPinchDistance: 0,
       auditLogs: [],
@@ -1872,8 +1947,6 @@
       scannerStatus: 'READY',
       torchSupported: false,
       torchOn: false,
-      html5QrCode: null,
-      barcodeTrackingTimer: null,
       _scanStream: null, _scanVideo: null, _scanCanvas: null, _scanCtx: null,
       _scanNativeDetector: null, _scanZXingReader: null, _scanDecoder: 'NONE',
       _scanActive: false, _scanRaf: null, _scanRoi: null, _scanLocked: false, _scanMisses: 0, _scanLastCode: '', _scanLastAt: 0, _scanLastFrameAt: 0,
@@ -1885,7 +1958,6 @@
       bulkMatchColIdx: 1,
       bulkPreview: null,
       integrityReport: null,
-      testResults: [],
       toastTimeout: null,
       _workspaceDbPromise: null,
       _workspaceSaveTimer: null,
@@ -1895,7 +1967,6 @@
       undoStack: [],
       redoStack: [],
       historyLimit: 30,
-      insightsQuery: '',
       lowStockThreshold: 5,
 
       async init() {
@@ -2046,14 +2117,6 @@
         this.restoreEditSnapshot(this.redoStack.pop());
       },
 
-      setInsightsQuery(value) {
-        this.insightsQuery = String(value || '');
-        const data = this.getInventoryInsights();
-        const list = document.getElementById('insights-search-results');
-        const count = document.getElementById('insights-search-count');
-        if (count) count.textContent = `${data.filtered.length} matching records`;
-        if (list) list.innerHTML = data.filtered.slice(0, 100).map(r => `<div class="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-1 px-3 py-2 border-b border-white/5"><div class="min-w-0"><div class="text-xs text-white truncate">${escapeHtml(r.itemName || 'Unnamed item')}</div><div class="text-[10px] text-neutral-500">${escapeHtml(r.sheetName)} · Row ${r.rowNumber} · ${escapeHtml(r.codes.join(', ') || 'No code')}</div></div><div class="text-xs font-mono ${r.qty === 0 ? 'text-rose-300' : 'text-amber-300'}">${r.qty === null ? 'Invalid qty' : `${r.qty} in stock`}</div></div>`).join('') || '<div class="p-4 text-xs text-neutral-500">No matching records.</div>';
-      },
       setLowStockThreshold(value) {
         const n = Number(value);
         if (Number.isFinite(n) && n >= 0) this.lowStockThreshold = n;
@@ -2081,10 +2144,8 @@
           });
         });
         const duplicates = [...duplicateMap.entries()].filter(([, matches]) => matches.length > 1).map(([code, matches]) => ({ code, matches }));
-        const query = this.insightsQuery.trim().toLowerCase();
-        const filtered = query ? rows.filter(r => [r.itemName, r.sheetName, String(r.rowNumber), ...r.codes].join(' ').toLowerCase().includes(query)) : rows;
         return {
-          rows, filtered, duplicates,
+          rows, duplicates,
           low: rows.filter(r => r.qty !== null && r.qty > 0 && r.qty <= this.lowStockThreshold),
           zero: rows.filter(r => r.qty === 0),
           modified: rows.filter(r => r.modified),
@@ -2202,10 +2263,13 @@
         const rowMarkup = r => `<div class="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-1 px-3 py-2 border-b border-white/5"><div class="min-w-0"><div class="text-xs text-white truncate">${escapeHtml(r.itemName || 'Unnamed item')}</div><div class="text-[10px] text-neutral-500">${escapeHtml(r.sheetName)} · Row ${r.rowNumber} · ${escapeHtml(r.codes.join(', ') || 'No code')}</div></div><div class="text-xs font-mono ${r.qty === 0 ? 'text-rose-300' : 'text-amber-300'}">${r.qty === null ? 'Invalid qty' : `${r.qty} in stock`}</div></div>`;
         container.innerHTML = `
           <div class="space-y-4">
-            <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">Inventory Insights</div><div class="text-xs text-neutral-500">Cross-worksheet monitoring and recovery tools</div></div><div class="flex gap-2"><button onclick="app.undoEdit()" ${this.undoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↶ Undo</button><button onclick="app.redoEdit()" ${this.redoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↷ Redo</button></div></div>
+            <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-semibold text-white">Inventory Insights</div><div class="text-xs text-neutral-500">Cross-worksheet monitoring, stock health, reports, and recovery tools</div></div><div class="flex gap-2"><button onclick="app.undoEdit()" ${this.undoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↶ Undo</button><button onclick="app.redoEdit()" ${this.redoStack.length ? '' : 'disabled'} class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-white disabled:opacity-40">↷ Redo</button></div></div>
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">${card('Total records', data.rows.length, `${this.workbook.worksheets.length} worksheets`)}${card('Units on hand', data.totalQty.toLocaleString(), 'Sum of recognized quantities', 'text-emerald-300')}${card('Low stock', data.low.length, `1 to ${this.lowStockThreshold} units`, 'text-amber-300')}${card('Zero stock', data.zero.length, 'Needs replenishment review', 'text-rose-300')}</div>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-2"><div class="font-semibold text-sm">Search all worksheets</div><input value="${escapeHtml(this.insightsQuery)}" oninput="app.setInsightsQuery(this.value)" placeholder="Item, SKU, barcode, worksheet, row…" class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white"/><div id="insights-search-count" class="text-[10px] text-neutral-500">${data.filtered.length} matching records</div><div id="insights-search-results" class="max-h-72 overflow-auto">${data.filtered.slice(0,100).map(rowMarkup).join('') || '<div class="p-4 text-xs text-neutral-500">No matching records.</div>'}</div></section>
+              <section class="bg-[#171717] border border-white/10 rounded-xl p-4 space-y-2 flex flex-col justify-between">
+                <div><div class="font-semibold text-sm">Find inventory</div><p class="text-xs text-neutral-400 mt-1">Use the workbook-wide search in Worksheet Grid to find an item by name, SKU, barcode, code, or worksheet.</p></div>
+                <button onclick="app.switchView('workspace')" class="self-start inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white"><i data-lucide="search" class="w-3.5 h-3.5"></i>Open global search</button>
+              </section>
               <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3"><div class="font-semibold text-sm">Stock watch</div><label class="text-xs text-neutral-400">Low-stock threshold <input type="number" min="0" step="1" value="${this.lowStockThreshold}" onchange="app.setLowStockThreshold(this.value)" class="ml-2 w-20 bg-black/40 border border-white/10 rounded px-2 py-1 text-white"/></label><div class="text-xs text-amber-300">${data.low.length} items at or below threshold</div><div class="max-h-56 overflow-auto">${data.low.slice(0,100).map(rowMarkup).join('') || '<div class="text-xs text-neutral-500">No low-stock items at this threshold.</div>'}</div><div class="border-t border-white/10 pt-2"><div class="font-semibold text-sm">Duplicate identifiers</div><div class="text-[10px] text-neutral-500 mb-2">Exact normalized matches across code-like columns; review before merging.</div><div class="max-h-56 overflow-auto">${data.duplicates.slice(0,100).map(d => `<div class="py-2 border-b border-white/5"><div class="font-mono text-xs text-rose-300">${escapeHtml(d.code)}</div><div class="text-[10px] text-neutral-400">${d.matches.map(m => `${escapeHtml(m.sheetName)} · row ${m.rowNumber}`).join('  |  ')}</div></div>`).join('') || '<div class="text-xs text-neutral-500">No duplicate identifiers detected.</div>'}</div></div></section>
             </div>
             <section class="bg-[#171717] border border-white/10 rounded-xl p-3 space-y-3">
@@ -2311,8 +2375,8 @@
         this.searchQuery = '';
         this.filterModifiedOnly = false;
         const rowsAbove = 4;
-        this.gridScrollTop = Math.max(0, (rowIndex - rowsAbove) * this.gridRowHeight);
-        this.gridStartIndex = Math.max(0, Math.floor(this.gridScrollTop / this.gridRowHeight) - 12);
+        this.gridScrollTop = Math.max(0, (rowIndex - rowsAbove) * this.gridRowHeight * (this.gridZoom || 1));
+        this.gridStartIndex = Math.max(0, Math.floor(this.gridScrollTop / (this.gridRowHeight * (this.gridZoom || 1))) - (this.gridOverscan || 10));
         this.toggleSidebarDrawer(false);
         this.renderAll();
         const scroller = document.getElementById('virtual-worksheet-scroll');
@@ -3260,11 +3324,6 @@ handleSetScannedItemQty(rawAddedQty) {
         }
       },
 
-      async runAllAcceptanceTests() {
-        this.testResults = [{ id: 'Info', title: 'Demo fixture removed', passed: true, detail: 'Bundled demo workbook fixtures were removed. Import a real workbook before running workbook-specific checks.' }];
-        this.renderAll();
-      },
-
       handleRenameFflzHeader() {
         const activeSheet = this.workbook?.worksheets?.[this.activeSheetIdx];
         const input = document.getElementById('fflz-header-name-input');
@@ -3723,31 +3782,47 @@ handleSetScannedItemQty(rawAddedQty) {
       renderNavTabs() {
         const container = document.getElementById('nav-tabs-container');
         if (!container) return;
-        const tabs = [
-          { id: 'scanner', label: 'Barcode Scanner (Home)', icon: 'scan-barcode' },
-          { id: 'workspace', label: 'Worksheet Data Grid', icon: 'table' },
-          { id: 'bulk', label: 'Bulk Inventory Paste', icon: 'clipboard-paste' },
-          { id: 'history', label: `Audit History (${this.auditLogs.length})`, icon: 'history' },
-          { id: 'insights', label: 'Inventory Insights & Backups', icon: 'chart-no-axes-combined' },
-          { id: 'integrity', label: 'OpenXML Integrity Check', icon: 'shield-check' },
-          { id: 'tests', label: 'Acceptance Tests (9)', icon: 'play' },
+        const groups = [
+          { label: 'Scan', items: [
+            { id: 'scanner', label: 'Barcode Scanner', icon: 'scan-barcode' },
+          ]},
+          { label: 'Inventory', items: [
+            { id: 'workspace', label: 'Worksheet Grid', icon: 'table' },
+            { id: 'bulk', label: 'Bulk Update', icon: 'clipboard-paste' },
+          ]},
+          { label: 'Analytics', items: [
+            { id: 'insights', label: 'Inventory Insights & Backups', icon: 'chart-no-axes-combined' },
+          ]},
+          { label: 'Activity', items: [
+            { id: 'history', label: `Audit History (${this.auditLogs.length})`, icon: 'history' },
+          ]},
+          { label: 'System & Data', items: [
+            { id: 'integrity', label: 'OpenXML Integrity Check', icon: 'shield-check' },
+            { id: 'tests', label: 'Test Harness Status', icon: 'clipboard-check' },
+          ]},
         ];
-        container.innerHTML = tabs.map(t => {
-          const isActive = this.activeView === t.id;
-          return `
-            <button
-              onclick="app.switchView('${t.id}')"
-              class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition cursor-pointer ${
-                isActive
-                  ? 'bg-white/10 text-white font-semibold'
-                  : 'text-neutral-400 hover:text-white hover:bg-white/5'
-              }"
-            >
-              <i data-lucide="${t.icon}" class="w-4 h-4 ${isActive ? 'text-emerald-400' : 'text-neutral-400'}"></i>
-              <span class="truncate">${escapeHtml(t.label)}</span>
-            </button>
-          `;
-        }).join('');
+        container.innerHTML = groups.map(group => `
+          <div class="pt-2 first:pt-0">
+            <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-neutral-500">${group.label}</div>
+            <div class="space-y-1">${group.items.map(t => {
+              const isActive = this.activeView === t.id;
+              return `
+                <button
+                  onclick="app.switchView('${t.id}')"
+                  aria-current="${isActive ? 'page' : 'false'}"
+                  class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-medium transition cursor-pointer ${
+                    isActive
+                      ? 'bg-white/10 text-white font-semibold'
+                      : 'text-neutral-400 hover:text-white hover:bg-white/5'
+                  }"
+                >
+                  <i data-lucide="${t.icon}" class="w-4 h-4 ${isActive ? 'text-emerald-400' : 'text-neutral-400'}"></i>
+                  <span class="truncate">${escapeHtml(t.label)}</span>
+                </button>
+              `;
+            }).join('')}</div>
+          </div>
+        `).join('');
       },
 
       renderSidebar() {
@@ -3809,25 +3884,54 @@ handleSetScannedItemQty(rawAddedQty) {
           if (stageTitle) stageTitle.textContent = 'OpenXML Integrity Verification';
           this.renderIntegrityView(container);
         } else if (this.activeView === 'tests') {
-          if (stageTitle) stageTitle.textContent = 'Automated Acceptance Tests (9 Scenarios)';
+          if (stageTitle) stageTitle.textContent = 'Test Harness Status';
           this.renderTestsView(container);
         }
         lucide.createIcons();
       },
 
       handleGridScroll(scrollElement) {
-        // Keep scrolling native: rebuilding the grid while a finger is moving
-        // interrupts momentum and makes the viewport jump.
-        if (!scrollElement || !this.workbook) return;
+        if (!scrollElement || !this.workbook || this.activeView !== 'workspace' || this.searchQuery.trim()) return;
         this.gridScrollTop = scrollElement.scrollTop;
+
+        const sheet = this.workbook.worksheets[this.activeSheetIdx];
+        if (!sheet) return;
+        const rows = this.filterModifiedOnly
+          ? sheet.records.filter(row => row.isModified || row.isFullUpcModified)
+          : sheet.records;
+        const effectiveRowHeight = this.gridRowHeight * (this.gridZoom || 1);
+        const viewportHeight = scrollElement.clientHeight || Math.max(320, (window.innerHeight || 800) - 300);
+        const visibleCount = Math.ceil(viewportHeight / effectiveRowHeight) + (this.gridOverscan || 10) * 2;
+        const maxStartIndex = Math.max(0, rows.length - visibleCount);
+        const nextStartIndex = Math.min(
+          Math.max(0, Math.floor(scrollElement.scrollTop / effectiveRowHeight) - (this.gridOverscan || 10)),
+          maxStartIndex
+        );
+        if (nextStartIndex === this.gridStartIndex) return;
+
+        this.gridStartIndex = nextStartIndex;
+        const currentBody = scrollElement.querySelector('tbody');
+        if (!currentBody) return;
+        const staging = document.createElement('div');
+        this.renderWorkspaceView(staging);
+        const nextBody = staging.querySelector('#virtual-worksheet-scroll tbody');
+        if (nextBody) {
+          currentBody.replaceWith(nextBody);
+          if (window.lucide) lucide.createIcons();
+        }
       },
 
       adjustGridZoom(delta) {
         this.gridZoom = Math.max(0.6, Math.min(1.6, Math.round((this.gridZoom + delta) * 100) / 100));
-        const table = document.querySelector('#virtual-worksheet-scroll table');
+        const scroller = document.getElementById('virtual-worksheet-scroll');
+        const table = scroller?.querySelector('table');
         const label = document.getElementById('grid-zoom-label');
         if (table) table.style.zoom = String(this.gridZoom);
         if (label) label.textContent = `${Math.round(this.gridZoom * 100)}%`;
+        if (scroller && this.activeView === 'workspace' && !this.searchQuery.trim()) {
+          this.gridStartIndex = -1;
+          this.handleGridScroll(scroller);
+        }
       },
 
       handleGridTouchStart(event) {
@@ -3857,6 +3961,20 @@ handleSetScannedItemQty(rawAddedQty) {
       resetGridScroll() {
         this.gridScrollTop = 0;
         this.gridStartIndex = 0;
+      },
+
+      toggleGridModifiedFilter() {
+        this.filterModifiedOnly = !this.filterModifiedOnly;
+        this.resetGridScroll();
+        if (this.searchQuery.trim()) {
+          this._gridSearchRequestId++;
+          this._gridSearchMatchedRows = null;
+          this._gridSearchMatchedQuery = '';
+          this.renderMainView();
+          this.handleGridSearch({ value: this.searchQuery });
+          return;
+        }
+        this.renderMainView();
       },
 
       // Debounced search: never rebuild the complete view for every keystroke.
@@ -3960,9 +4078,6 @@ handleSetScannedItemQty(rawAddedQty) {
       // sheets with different layouts are represented correctly.
       if (this.searchQuery.trim() !== '') {
         const rawQ = this.searchQuery.trim();
-        const q = rawQ.toLowerCase();
-        const digitsQ = normalizeCodeString(rawQ);
-        const numericSearch = digitsQ.length >= 3 && /^\d+$/.test(rawQ.replace(/[\s-]/g, ''));
         this.buildGridSearchIndex();
         const matches = this._gridSearchMatchedQuery === rawQ
           ? (this._gridSearchMatchedRows || [])
@@ -3980,7 +4095,7 @@ handleSetScannedItemQty(rawAddedQty) {
                 <div class="relative flex-1 max-w-md"><i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
                   <input id="worksheet-grid-search" type="text" value="${escapeHtml(this.searchQuery)}" oninput="app.handleGridSearch(this)" placeholder="Search all worksheets..." class="w-full min-w-0 pl-9 pr-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500" />
                 </div>
-                <button onclick="app.filterModifiedOnly = !app.filterModifiedOnly; app.resetGridScroll(); app.renderMainView();" class="px-3 py-2 rounded-lg text-xs border ${this.filterModifiedOnly ? 'bg-amber-500/20 border-amber-500/40 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-400'}">Modified Only</button>
+                <button onclick="app.toggleGridModifiedFilter()" class="px-3 py-2 rounded-lg text-xs border ${this.filterModifiedOnly ? 'bg-amber-500/20 border-amber-500/40 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-400'}">Modified Only</button>
               </div>
               <span class="text-xs text-slate-400">${this._gridSearchMatchedQuery !== rawQ ? 'Searching…' : `${matches.length} match${matches.length === 1 ? '' : 'es'} across all worksheets`}</span>
             </div>
@@ -3997,53 +4112,6 @@ handleSetScannedItemQty(rawAddedQty) {
       let list = [...activeSheet.records];
       if (this.filterModifiedOnly) {
         list = list.filter(r => r.isModified || r.isFullUpcModified);
-      }
-      if (this.searchQuery.trim() !== '') {
-        const rawQ = this.searchQuery.trim();
-        const digitsQ = normalizeCodeString(rawQ);
-        const isNumericSearch = digitsQ.length >= 3 && /^\d+$/.test(rawQ.replace(/[\s-]/g, ''));
-
-        if (isNumericSearch) {
-          const scoredRows = [];
-          list.forEach(r => {
-            let bestRowDigits = 0;
-            activeSheet.headers.forEach(h => {
-              if (h.isFflz) return;
-              const rawVal = h.isFullUpc ? r.currentFullUpcValue : r.cells[h.colIndex]?.value;
-              const cellNorm = normalizeCodeString(rawVal);
-              if (!cellNorm) return;
-              const score = computeCappedSuffixScore(digitsQ, cellNorm);
-              if (score && score.matchedDigitsCount > bestRowDigits) {
-                bestRowDigits = score.matchedDigitsCount;
-              }
-            });
-
-            if (bestRowDigits > 0) {
-              scoredRows.push({ rec: r, matchedDigits: bestRowDigits });
-            }
-          });
-
-          if (scoredRows.length > 0) {
-            const maxMatched = Math.max(...scoredRows.map(s => s.matchedDigits));
-            list = scoredRows
-              .filter(s => s.matchedDigits === maxMatched)
-              .map(s => s.rec);
-          } else {
-            const q = rawQ.toLowerCase();
-            list = list.filter(r =>
-              Object.values(r.cells).some(c => String(c.value).toLowerCase().includes(q)) ||
-              String(r.currentFflzValue).toLowerCase().includes(q) ||
-              String(r.currentFullUpcValue).toLowerCase().includes(q)
-            );
-          }
-        } else {
-          const q = rawQ.toLowerCase();
-          list = list.filter(r =>
-            Object.values(r.cells).some(c => String(c.value).toLowerCase().includes(q)) ||
-            String(r.currentFflzValue).toLowerCase().includes(q) ||
-            String(r.currentFullUpcValue).toLowerCase().includes(q)
-          );
-        }
       }
 
         const duplicateWarningHtml = isLocked ? `
@@ -4095,9 +4163,17 @@ handleSetScannedItemQty(rawAddedQty) {
           `;
         }).join('');
 
-        const maxStartIndex = Math.max(0, list.length - 1);
-        const startIndex = Math.min(Math.max(0, this.gridStartIndex || 0), maxStartIndex);
-        const visibleRows = list.slice(startIndex, startIndex + this.gridWindowSize);
+        const effectiveRowHeight = this.gridRowHeight * (this.gridZoom || 1);
+        const estimatedViewportHeight = Math.max(320, (window.innerHeight || 800) - 300);
+        const viewportHeight = document.getElementById('virtual-worksheet-scroll')?.clientHeight || estimatedViewportHeight;
+        const visibleCount = Math.ceil(viewportHeight / effectiveRowHeight) + (this.gridOverscan || 10) * 2;
+        const maxStartIndex = Math.max(0, list.length - visibleCount);
+        const startIndex = Math.min(
+          Math.max(0, Math.floor((this.gridScrollTop || 0) / effectiveRowHeight) - (this.gridOverscan || 10)),
+          maxStartIndex
+        );
+        this.gridStartIndex = startIndex;
+        const visibleRows = list.slice(startIndex, startIndex + visibleCount);
         const topSpacerHtml = startIndex > 0 ? `
           <tr aria-hidden="true" class="virtual-spacer"><td colspan="${activeSheet.headers.length + 1}" style="height:${startIndex * this.gridRowHeight}px;padding:0;border:0;line-height:0;"></td></tr>
         ` : '';
@@ -4210,7 +4286,7 @@ handleSetScannedItemQty(rawAddedQty) {
           }).join('');
 
           return `
-            <tr class="transition ${rowClass}" style="height:${this.gridRowHeight}px;">
+            <tr class="transition virtual-grid-row ${rowClass}" style="height:${this.gridRowHeight}px;">
               <td class="py-2.5 px-3 text-center font-mono text-xs text-slate-500 bg-slate-950/50 border-r border-slate-800">${rec.rowNumber}</td>
               ${cellsHtml}
             </tr>
@@ -4234,7 +4310,7 @@ handleSetScannedItemQty(rawAddedQty) {
                   />
                 </div>
                 <button
-                  onclick="app.filterModifiedOnly = !app.filterModifiedOnly; app.resetGridScroll(); app.renderMainView();"
+                  onclick="app.toggleGridModifiedFilter()"
                   class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition cursor-pointer ${
                     this.filterModifiedOnly
                       ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
@@ -4252,12 +4328,11 @@ handleSetScannedItemQty(rawAddedQty) {
                   <button type="button" onclick="app.adjustGridZoom(0.1)" class="h-7 w-7 rounded hover:bg-slate-800 text-slate-200" aria-label="Zoom in" title="Zoom in">+</button>
                 </div>
                 <span class="hidden sm:inline text-[10px] text-slate-500">Pinch to zoom</span>
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-950/60 border border-emerald-500/30 text-emerald-300">
-                  Qty: <strong>${activeSheet.fflzColLetter} (FFLZ-20)</strong>
-                </span>
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-indigo-950/60 border border-indigo-500/30 text-indigo-300">
-                  Full Code: <strong>${activeSheet.fullUpcColLetter} (FULL_UPC)</strong>
-                </span>
+                <div class="hidden md:flex items-center gap-3 text-[10px] text-slate-400" aria-label="Worksheet grid color legend">
+                  <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-emerald-400"></span>Managed quantity</span>
+                  <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-indigo-400"></span>Managed barcode</span>
+                  <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-amber-400"></span>Modified</span>
+                </div>
               </div>
             </div>
 
@@ -4486,45 +4561,20 @@ handleSetScannedItemQty(rawAddedQty) {
 
       renderTestsView(container) {
         container.innerHTML = `
-          <div class="flex-1 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-6">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <section class="flex-1 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+            <div class="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <i data-lucide="clipboard-check" class="w-5 h-5 text-amber-300"></i>
               <div>
-                <h2 class="text-lg font-bold text-white flex items-center gap-2">
-                  <i data-lucide="play" class="w-5 h-5 text-emerald-400"></i>
-                  Automated Acceptance Test Suite (Scenarios 1 – 9)
-                </h2>
-                <p class="text-xs text-slate-400 mt-0.5">
-                  Executes end-to-end binary OpenXML tests against "John Genanda" verifying column reuse, suffix barcode matching (6..3 digits), FULL_UPC migration, and style/formula preservation.
-                </p>
+                <h2 class="text-lg font-bold text-white">Test harness status</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Automated workbook acceptance scenarios are not configured in this build.</p>
               </div>
-              <button onclick="app.runAllAcceptanceTests()" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer">
-                <i data-lucide="play" class="w-4 h-4"></i>
-                <span>Run All 9 Acceptance Tests</span>
-              </button>
             </div>
-            ${
-              this.testResults.length === 0
-                ? '<div class="py-12 text-center text-slate-400 text-sm">Click <strong>"Run All 9 Acceptance Tests"</strong> to execute the automated verification suite right now.</div>'
-                : `
-                  <div class="space-y-2.5">
-                    ${this.testResults.map(t => `
-                      <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-start justify-between gap-4">
-                        <div class="flex items-start gap-3">
-                          <i data-lucide="${t.passed ? 'check-circle-2' : 'alert-circle'}" class="w-5 h-5 ${t.passed ? 'text-emerald-400' : 'text-rose-400'} shrink-0 mt-0.5"></i>
-                          <div>
-                            <div class="text-xs sm:text-sm font-bold text-white">${escapeHtml(t.id)}: ${escapeHtml(t.title)}</div>
-                            <div class="text-xs text-slate-400 mt-0.5">${escapeHtml(t.detail)}</div>
-                          </div>
-                        </div>
-                        <span class="px-2.5 py-1 rounded text-xs font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">
-                          ${t.passed ? 'PASSED' : 'FAILED'}
-                        </span>
-                      </div>
-                    `).join('')}
-                  </div>
-                `
-            }
-          </div>
+            <div class="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4 space-y-2">
+              <div class="text-sm font-semibold text-amber-200">No acceptance tests were executed</div>
+              <p class="text-xs leading-relaxed text-slate-300">The previous interface advertised nine scenarios, but its test runner only displayed an informational message and did not run those scenarios. That misleading control has been removed.</p>
+              <p class="text-xs leading-relaxed text-slate-400">For a real workbook check, import your file and open <strong class="text-slate-200">System &amp; Data → OpenXML Integrity Check</strong> after exporting. That verification checks the generated archive, worksheet order, styles, formulas, and managed inventory columns.</p>
+            </div>
+          </section>
         `;
       },
 
