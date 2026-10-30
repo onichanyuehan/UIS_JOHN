@@ -862,6 +862,11 @@
   </div>
 
   <!-- ====================================================================== -->
+  <!-- USER-DEFINED INVENTORY COLUMN SETUP -->
+  <!-- ====================================================================== -->
+  <div id="inventory-column-setup-modal" class="hidden fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5"></div>
+
+  <!-- ====================================================================== -->
   <!-- MULTIPLE SUFFIX COLLISION DISAMBIGUATION MODAL -->
   <!-- ====================================================================== -->
   <div id="disambiguation-modal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1468,7 +1473,9 @@
         return { value: rawValue, formula, styleId: cNode.getAttribute('s') || null, type: type || 'n' };
       }
 
-      static async inspectAndPrepareWorkbook(arrayBuffer, filename, headerRowOverrides = {}) {
+      static async inspectAndPrepareWorkbook(arrayBuffer, filename, headerRowOverrides = {}, inventoryColumnConfig = null) {
+        // Inventory columns are assigned only from an explicit user choice for this import.
+        const configuredInventoryHeader = String(inventoryColumnConfig?.headerName || '').trim();
         // Worker pre-inflates XML entries; fall back gracefully if Worker/CDN access is unavailable.
         let xmlCache = null;
         try { xmlCache = await preloadWorkbookXmlInWorker(arrayBuffer); }
@@ -1570,6 +1577,7 @@
           let fflzStatus = 'EXISTING';
           let fflzColIndex = null;
           let fflzColLetter = null;
+          let fflzHeaderName = '';
           const fflzMatches = [];
 
           let fullUpcStatus = 'EXISTING';
@@ -1585,7 +1593,7 @@
 
             for (let c = 1; c <= maxCol; c++) {
               const cellVal = headerCells[c]?.value !== undefined ? String(headerCells[c].value).trim() : '';
-              if (cellVal.toUpperCase() === 'FFLZ-20') {
+              if (cellVal.toUpperCase() === 'FFLZ-20' || (configuredInventoryHeader && cellVal.toLowerCase() === configuredInventoryHeader.toLowerCase())) {
                 fflzMatches.push({ col: c, colLetter: colIndexToLetter(c), rawHeader: headerCells[c].value });
               }
               if (cellVal.toUpperCase() === 'FULL_UPC') {
@@ -1609,16 +1617,20 @@
             }
 
 
-            // 2. Inventory column must be the final/rightmost worksheet column.
-            // Reuse a matching header only when it is already at the right edge;
-            // ignore matching headers elsewhere and append a fresh FFLZ-20 column.
-            const rightmostFflzMatch = fflzMatches.find(match => match.col === maxCol);
-            if (rightmostFflzMatch) {
-              fflzStatus = fflzMatches.length > 1 ? 'DUPLICATE_FLAGGED' : 'EXISTING';
-              fflzColIndex = rightmostFflzMatch.col;
-              fflzColLetter = rightmostFflzMatch.colLetter;
-            } else {
+            // The user explicitly chooses whether this worksheet reuses a column
+            // or receives a newly-created inventory column. Never infer a choice.
+            const chosenColIndex = inventoryColumnConfig?.mode === 'choose'
+              ? Number(inventoryColumnConfig.selections?.[sheetName])
+              : 0;
+
+            if (inventoryColumnConfig?.mode === 'choose' && chosenColIndex > 0 && headerCells[chosenColIndex]) {
+              fflzColIndex = chosenColIndex;
+              fflzColLetter = colIndexToLetter(chosenColIndex);
+              fflzHeaderName = String(headerCells[chosenColIndex].value || `Column ${fflzColLetter}`).trim();
+              fflzStatus = 'EXISTING';
+            } else if (inventoryColumnConfig?.mode === 'create' && configuredInventoryHeader) {
               fflzStatus = 'CREATED';
+              fflzHeaderName = configuredInventoryHeader;
               fflzColIndex = maxCol + 1;
               fflzColLetter = colIndexToLetter(fflzColIndex);
               maxCol = fflzColIndex;
@@ -1634,7 +1646,7 @@
                 if (inheritedHeaderStyle) newCellEl.setAttribute('s', inheritedHeaderStyle);
                 const isEl = sheetDoc.createElementNS(ns, 'is');
                 const tEl = sheetDoc.createElementNS(ns, 't');
-                tEl.textContent = 'FFLZ-20';
+                tEl.textContent = configuredInventoryHeader;
                 isEl.appendChild(tEl);
                 newCellEl.appendChild(isEl);
                 targetRowNode.appendChild(newCellEl);
@@ -1643,7 +1655,7 @@
 
               rowsMap[headerRowNum][fflzColIndex] = {
                 ref: newCellRef,
-                value: 'FFLZ-20',
+                value: configuredInventoryHeader,
                 formula: null,
                 styleId: inheritedHeaderStyle,
                 type: 'inlineStr'
@@ -1655,11 +1667,14 @@
                 sheetName,
                 cellAddress: newCellRef,
                 previousValue: '(Missing Column)',
-                newValue: 'FFLZ-20 (Header Created)',
-                operation: 'AUTO_COLUMN_APPEND'
+                newValue: `${configuredInventoryHeader} (Column Created)`,
+                operation: 'USER_APPROVED_COLUMN_APPEND'
               });
+            } else {
+              fflzStatus = 'NOT_CONFIGURED';
+              fflzColIndex = null;
+              fflzColLetter = null;
             }
-
 
             if (sheetModified) {
               zip.file(targetPath, serializer.serializeToString(sheetDoc));
@@ -1755,6 +1770,7 @@
             fflzStatus,
             fflzColIndex,
             fflzColLetter,
+            fflzHeaderName: fflzHeaderName || 'FFLZ-20',
             fflzMatches,
             fullUpcStatus,
             fullUpcColIndex,
@@ -2683,6 +2699,115 @@
         this.showToast('Import an Excel workbook to begin.', 'error');
       },
 
+      openInventoryColumnSetup(inspected) {
+        const modal = document.getElementById('inventory-column-setup-modal');
+        if (!modal) return Promise.resolve(null);
+        const sheets = (inspected.worksheets || []).filter(ws => ws.headerRowNum && Array.isArray(ws.headers) && ws.headers.length);
+        if (!sheets.length) return Promise.resolve({ mode: 'skip' });
+
+        return new Promise(resolve => {
+          let settled = false;
+          const finish = value => {
+            if (settled) return;
+            settled = true;
+            modal.classList.add('hidden');
+            modal.innerHTML = '';
+            this._inventorySetupResolve = null;
+            resolve(value);
+          };
+          this._inventorySetupResolve = finish;
+
+          const shell = content => `
+            <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-white/15 bg-[#17232b] shadow-2xl p-5 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="inventory-setup-title">
+              ${content}
+            </div>`;
+
+          const renderChoice = () => {
+            modal.innerHTML = shell(`
+              <div class="flex items-start gap-3 mb-5">
+                <div class="w-10 h-10 rounded-xl bg-emerald-400/15 text-emerald-300 flex items-center justify-center shrink-0"><i data-lucide="columns-3" class="w-5 h-5"></i></div>
+                <div><h2 id="inventory-setup-title" class="text-lg font-bold text-white">Set up the inventory column</h2><p class="text-xs text-slate-300 mt-1">Choose how the inventory quantity column should be assigned before this workbook is imported.</p></div>
+              </div>
+              <div class="grid sm:grid-cols-2 gap-3">
+                <button type="button" data-inventory-action="create" class="text-left rounded-xl border border-emerald-400/35 bg-emerald-400/10 hover:bg-emerald-400/15 p-4">
+                  <span class="flex items-center gap-2 text-sm font-bold text-white"><i data-lucide="plus-circle" class="w-4 h-4 text-emerald-300"></i> Create a new column</span>
+                  <span class="block text-xs text-slate-300 mt-2 leading-relaxed">Enter a header name. A new column will be appended to each worksheet with a detected table.</span>
+                </button>
+                <button type="button" data-inventory-action="choose" class="text-left rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 p-4">
+                  <span class="flex items-center gap-2 text-sm font-bold text-white"><i data-lucide="list-checks" class="w-4 h-4 text-sky-300"></i> Choose existing columns</span>
+                  <span class="block text-xs text-slate-300 mt-2 leading-relaxed">Select which existing column represents inventory in each worksheet.</span>
+                </button>
+              </div>
+              <div class="mt-5 flex justify-end"><button type="button" data-inventory-action="cancel" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-300 hover:bg-white/10">Cancel import</button></div>
+            `);
+            modal.classList.remove('hidden');
+            modal.querySelector('[data-inventory-action="create"]').addEventListener('click', renderCreate);
+            modal.querySelector('[data-inventory-action="choose"]').addEventListener('click', renderChoose);
+            modal.querySelector('[data-inventory-action="cancel"]').addEventListener('click', () => finish(null));
+            if (window.lucide) lucide.createIcons();
+          };
+
+          const renderCreate = () => {
+            modal.innerHTML = shell(`
+              <div class="flex items-start gap-3 mb-5"><div class="w-10 h-10 rounded-xl bg-emerald-400/15 text-emerald-300 flex items-center justify-center"><i data-lucide="plus-square" class="w-5 h-5"></i></div><div><h2 id="inventory-setup-title" class="text-lg font-bold text-white">Create inventory column</h2><p class="text-xs text-slate-300 mt-1">Enter the exact header name to add to each worksheet.</p></div></div>
+              <form id="inventory-create-form" class="space-y-4">
+                <label class="block"><span class="block text-xs font-semibold text-slate-200 mb-2">New column header</span><input id="inventory-new-header" type="text" maxlength="80" required value="FFLZ-20" placeholder="e.g. Inventory Qty" class="w-full rounded-xl px-3 py-2.5 text-sm" /></label>
+                <p class="text-[11px] leading-relaxed text-slate-400">This column will be added at the right side of every worksheet that contains a detected table. Existing worksheet data will be preserved.</p>
+                <div class="flex items-center justify-between gap-2"><button type="button" data-inventory-action="back" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-300 hover:bg-white/10">Back</button><div class="flex gap-2"><button type="button" data-inventory-action="cancel" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-300 hover:bg-white/10">Cancel</button><button type="submit" class="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-400 text-slate-950 hover:bg-emerald-300">Create and import</button></div></div>
+              </form>
+            `);
+            modal.classList.remove('hidden');
+            modal.querySelector('[data-inventory-action="back"]').addEventListener('click', renderChoice);
+            modal.querySelector('[data-inventory-action="cancel"]').addEventListener('click', () => finish(null));
+            modal.querySelector('#inventory-create-form').addEventListener('submit', event => {
+              event.preventDefault();
+              const headerName = String(modal.querySelector('#inventory-new-header').value || '').trim();
+              if (!headerName) { modal.querySelector('#inventory-new-header').focus(); return; }
+              if (headerName.length > 80) { this.showErrorBanner('Inventory column header must be 80 characters or fewer.'); return; }
+              finish({ mode: 'create', headerName });
+            });
+            if (window.lucide) lucide.createIcons();
+            modal.querySelector('#inventory-new-header')?.focus();
+          };
+
+          const renderChoose = () => {
+            const rows = sheets.map((ws, index) => {
+              const preferred = ws.headers.find(h => String(h.name).trim().toUpperCase() === 'FFLZ-20');
+              const options = ws.headers.map(h => `<option value="${h.colIndex}" ${preferred && preferred.colIndex === h.colIndex ? 'selected' : ''}>${escapeHtml(`Column ${h.colLetter} · ${h.name}`)}</option>`).join('');
+              return `<label class="block rounded-xl border border-white/10 bg-white/[.035] p-3"><span class="block text-xs font-semibold text-slate-100 mb-2">${escapeHtml(ws.sheetName)}</span><select data-inventory-sheet="${index}" class="w-full rounded-lg px-3 py-2 text-xs"><option value="">Choose a column…</option>${options}</select><span class="block text-[10px] text-slate-400 mt-1">${ws.headers.length} available column${ws.headers.length === 1 ? '' : 's'}</span></label>`;
+            }).join('');
+            modal.innerHTML = shell(`
+              <div class="flex items-start gap-3 mb-4"><div class="w-10 h-10 rounded-xl bg-sky-400/15 text-sky-300 flex items-center justify-center"><i data-lucide="list-checks" class="w-5 h-5"></i></div><div><h2 id="inventory-setup-title" class="text-lg font-bold text-white">Choose inventory columns</h2><p class="text-xs text-slate-300 mt-1">Select one existing column for every worksheet. Each list contains all detected headers from that worksheet.</p></div></div>
+              <div class="grid sm:grid-cols-2 gap-3">${rows}</div>
+              <p id="inventory-choice-error" class="hidden text-xs text-rose-300 mt-3" role="alert"></p>
+              <div class="flex items-center justify-between gap-2 mt-5"><button type="button" data-inventory-action="back" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-300 hover:bg-white/10">Back</button><div class="flex gap-2"><button type="button" data-inventory-action="cancel" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-300 hover:bg-white/10">Cancel</button><button type="button" data-inventory-action="apply" class="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-400 text-slate-950 hover:bg-emerald-300">Use selected columns</button></div></div>
+            `);
+            modal.classList.remove('hidden');
+            modal.querySelector('[data-inventory-action="back"]').addEventListener('click', renderChoice);
+            modal.querySelector('[data-inventory-action="cancel"]').addEventListener('click', () => finish(null));
+            modal.querySelector('[data-inventory-action="apply"]').addEventListener('click', () => {
+              const selections = {};
+              const missing = [];
+              modal.querySelectorAll('[data-inventory-sheet]').forEach(select => {
+                const ws = sheets[Number(select.dataset.inventorySheet)];
+                if (select.value) selections[ws.sheetName] = Number(select.value);
+                else missing.push(ws.sheetName);
+              });
+              if (missing.length) {
+                const error = modal.querySelector('#inventory-choice-error');
+                error.textContent = `Choose an inventory column for: ${missing.join(', ')}.`;
+                error.classList.remove('hidden');
+                return;
+              }
+              finish({ mode: 'choose', selections });
+            });
+            if (window.lucide) lucide.createIcons();
+          };
+
+          renderChoice();
+        });
+      },
+
       async handleFileUpload(e) {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -2701,8 +2826,30 @@
         try {
           this.headerRowOverrides = {};
           const buffer = await file.arrayBuffer();
-          this.showToast('Preparing workbook in background. Large files may take a little longer…', 'success');
-          const inspected = await OpenXmlSurgicalEngine.inspectAndPrepareWorkbook(buffer, file.name, this.headerRowOverrides);
+          this.showToast('Inspecting workbook structure. Large files may take a little longer…', 'success');
+
+          // First pass discovers worksheet names and headers without assigning or
+          // modifying any inventory column. The setup dialog needs this metadata.
+          let inspected = await OpenXmlSurgicalEngine.inspectAndPrepareWorkbook(
+            buffer,
+            file.name,
+            this.headerRowOverrides,
+            { mode: 'skip' }
+          );
+
+          const inventoryConfig = await this.openInventoryColumnSetup(inspected);
+          if (!inventoryConfig) {
+            this.showToast('Workbook import cancelled. No inventory column was changed.', 'error');
+            return;
+          }
+
+          // Second pass applies the user's explicit column choice to the original file.
+          inspected = await OpenXmlSurgicalEngine.inspectAndPrepareWorkbook(
+            buffer,
+            file.name,
+            this.headerRowOverrides,
+            inventoryConfig
+          );
           this.workbook = inspected;
           this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
           this.workbook.inventoryHistory = [];
@@ -4039,7 +4186,7 @@ handleSetScannedItemQty(rawAddedQty) {
             { id: 'tests', label: 'Test Harness Status', icon: 'clipboard-check' },
           ]},
           { label: 'Preferences', items: [
-            { id: 'settings', label: 'Appearance & Themes', icon: 'palette' },
+            { id: 'settings', label: 'Settings & Data', icon: 'settings' },
           ]},
         ];
         container.innerHTML = groups.map(group => `
@@ -4104,7 +4251,7 @@ handleSetScannedItemQty(rawAddedQty) {
         const stageTitle = document.getElementById('secondary-stage-title');
         if (!container) return;
         if (this.activeView === 'settings') {
-          if (stageTitle) stageTitle.textContent = 'Appearance & Themes';
+          if (stageTitle) stageTitle.textContent = 'Settings & Data';
           this.renderThemeSettingsView(container);
           lucide.createIcons();
           return;
@@ -4637,6 +4784,85 @@ handleSetScannedItemQty(rawAddedQty) {
         }
       },
 
+      resetInventorySessionState() {
+        this.workbook = null;
+        this.headerRowOverrides = {};
+        this.auditLogs = [];
+        this.activeSheetIdx = 0;
+        this.activeView = 'settings';
+        this.searchQuery = '';
+        this.filterModifiedOnly = false;
+        this.undoStack = [];
+        this.redoStack = [];
+        this.bulkPreview = null;
+        this._gridSearchIndexedWorkbook = null;
+        this._gridSearchCache = null;
+        this._gridSearchMatchedRows = null;
+        this.codeIndex = new Map();
+        this.rebuildIndex();
+      },
+
+      async deleteOwnedWorkspaceDatabase() {
+        if (this._workspaceSaveTimer) clearTimeout(this._workspaceSaveTimer);
+        this._workspaceSaveQueued = false;
+        if (this._workspaceDbPromise) {
+          try { const db = await this._workspaceDbPromise; db.close(); } catch (_) {}
+        }
+        this._workspaceDbPromise = null;
+        if (!('indexedDB' in window)) return;
+        await new Promise((resolve, reject) => {
+          const request = indexedDB.deleteDatabase('UIS_LocalWorkspace');
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error || new Error('Could not delete UIS local database'));
+          request.onblocked = () => reject(new Error('Close other tabs running this app, then try again'));
+        });
+      },
+
+      async clearInventoryData() {
+        const hasData = !!this.workbook;
+        const message = hasData
+          ? 'Clear the loaded workbook, its edits, audit history, and this app’s browser recovery copy? This cannot be undone. Download a backup first if you need to keep the data.'
+          : 'Clear this app’s saved workbook recovery copy from this browser? This cannot be undone.';
+        if (!window.confirm(message)) return;
+        try {
+          await this.deleteOwnedWorkspaceDatabase();
+          this.resetInventorySessionState();
+          this.renderAll();
+          this.showToast('Inventory data and local recovery were cleared. Theme settings were kept.');
+        } catch (error) {
+          console.error('UIS inventory clear failed:', error);
+          this.showToast(error.message || 'Could not completely clear inventory data.', 'error');
+        }
+      },
+
+      resetAppSettings() {
+        if (!window.confirm('Reset this app’s saved preferences to their defaults? The current workbook and inventory data will be kept.')) return;
+        try { localStorage.removeItem('uis-interface-theme'); } catch (error) { console.warn('Could not reset theme preference:', error); }
+        this.applyTheme('warm-sand');
+        if (this.activeView === 'settings') this.renderMainView();
+        if (window.lucide) lucide.createIcons();
+        this.showToast('App settings reset. Warm Sand is now the default theme.');
+      },
+
+      async clearAllAppData() {
+        if (!window.confirm('Delete ALL Universal Inventory System data stored by this app in this browser, including the saved workbook recovery copy and theme preference? Your currently loaded workbook will also be cleared. Download a backup first if needed. Data belonging to other websites will not be touched.')) return;
+        try {
+          await this.deleteOwnedWorkspaceDatabase();
+          try { localStorage.removeItem('uis-interface-theme'); } catch (error) { console.warn('Could not remove UIS theme preference:', error); }
+          if ('caches' in window) {
+            const cacheNames = await caches.keys();
+            await Promise.all(cacheNames.filter(name => /^uis[-_]/i.test(name)).map(name => caches.delete(name)));
+          }
+          this.resetInventorySessionState();
+          this.applyTheme('warm-sand');
+          this.renderAll();
+          this.showToast('All UIS app data stored by this browser was cleared. Other websites were not affected.');
+        } catch (error) {
+          console.error('UIS full data clear failed:', error);
+          this.showToast(error.message || 'Some app data could not be cleared.', 'error');
+        }
+      },
+
       renderThemeSettingsView(container) {
         const selected = this.currentTheme || 'warm-sand';
         const cards = Object.entries(UIS_THEMES).map(([id, theme]) => `
@@ -4654,9 +4880,33 @@ handleSetScannedItemQty(rawAddedQty) {
             <section class="rounded-2xl p-4 sm:p-5" style="background:var(--uis-surface);border:1px solid var(--uis-line)">
               <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
                 <div><div class="text-base font-semibold">Appearance</div><p class="text-xs mt-1" style="color:var(--uis-muted)">Choose a workspace theme. Changes apply immediately across the interface.</p></div>
-                <span class="text-[11px] rounded-full px-3 py-1" style="background:var(--uis-surface-2);color:var(--uis-accent)">7 themes available</span>
+                <span class="text-[11px] rounded-full px-3 py-1" style="background:var(--uis-surface-2);color:var(--uis-accent)">${Object.keys(UIS_THEMES).length} themes available</span>
               </div>
               <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">${cards}</div>
+            </section>
+            <section class="rounded-2xl p-4 sm:p-5 space-y-4" style="background:var(--uis-surface);border:1px solid var(--uis-line)">
+              <div>
+                <div class="text-base font-semibold">Data Management</div>
+                <p class="text-xs mt-1" style="color:var(--uis-muted)">Manage only data owned by Universal Inventory System in this browser. These actions do not delete your GitHub files, downloaded backups, browser history, or data belonging to other websites.</p>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <article class="rounded-xl p-3 space-y-2" style="background:var(--uis-surface-2);border:1px solid var(--uis-line)">
+                  <div class="text-sm font-semibold">Clear Inventory Data</div>
+                  <p class="text-xs min-h-[52px]" style="color:var(--uis-muted)">Clears the loaded workbook, edits, audit history, and saved browser recovery copy. Keeps your theme preference.</p>
+                  <button type="button" onclick="app.clearInventoryData()" class="w-full rounded-lg px-3 py-2 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white">Clear Inventory Data</button>
+                </article>
+                <article class="rounded-xl p-3 space-y-2" style="background:var(--uis-surface-2);border:1px solid var(--uis-line)">
+                  <div class="text-sm font-semibold">Reset App Settings</div>
+                  <p class="text-xs min-h-[52px]" style="color:var(--uis-muted)">Resets saved preferences to defaults, including the Warm Sand theme. Keeps workbook and inventory data.</p>
+                  <button type="button" onclick="app.resetAppSettings()" class="w-full rounded-lg px-3 py-2 text-xs font-semibold" style="background:var(--uis-accent);color:var(--uis-accent-contrast)">Reset App Settings</button>
+                </article>
+                <article class="rounded-xl p-3 space-y-2" style="background:var(--uis-surface-2);border:1px solid var(--uis-line)">
+                  <div class="text-sm font-semibold">Clear All App Data</div>
+                  <p class="text-xs min-h-[52px]" style="color:var(--uis-muted)">Removes this app’s IndexedDB recovery database, saved theme preference, and app-prefixed Cache Storage entries.</p>
+                  <button type="button" onclick="app.clearAllAppData()" class="w-full rounded-lg px-3 py-2 text-xs font-semibold bg-rose-700 hover:bg-rose-600 text-white">Clear All App Data</button>
+                </article>
+              </div>
+              <div class="rounded-lg p-3 text-xs" style="background:var(--uis-bg);color:var(--uis-muted);border:1px solid var(--uis-line)"><strong style="color:var(--uis-text)">Before clearing:</strong> Use the Backup management section under Inventory Insights &amp; Backups to download a portable JSON backup. Clearing browser data does not delete a backup file you already downloaded. Close other app tabs if the browser reports that local storage is blocked.</div>
             </section>
             <section class="rounded-2xl p-4" style="background:var(--uis-surface);border:1px solid var(--uis-line)">
               <div class="text-sm font-semibold mb-1">Theme behavior</div>
