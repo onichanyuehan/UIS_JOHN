@@ -334,10 +334,30 @@
     }
 
     .virtual-grid-row > td {
-      height: 88px;
-      max-height: 88px;
+      height: 28px;
+      max-height: 28px;
       overflow: hidden;
       vertical-align: middle;
+      padding-top: 1px !important;
+      padding-bottom: 1px !important;
+      line-height: 1.05 !important;
+    }
+    #virtual-worksheet-scroll thead th {
+      padding-top: 5px !important;
+      padding-bottom: 5px !important;
+      line-height: 1.1 !important;
+    }
+    #virtual-worksheet-scroll tbody td {
+      line-height: 1.05;
+    }
+    #virtual-worksheet-scroll tbody input,
+    #virtual-worksheet-scroll tbody select,
+    #virtual-worksheet-scroll tbody button {
+      min-height: 22px !important;
+      height: 22px !important;
+      padding-top: 1px !important;
+      padding-bottom: 1px !important;
+      line-height: 1.05 !important;
     }
   </style>
 
@@ -2155,7 +2175,7 @@
       // Virtualized worksheet rendering: only a small window of rows is mounted.
       gridScrollTop: 0,
       gridStartIndex: 0,
-      gridRowHeight: 88,
+      gridRowHeight: 28,
       gridOverscan: 10,
       gridZoom: 1,
       gridPinchDistance: 0,
@@ -4296,6 +4316,39 @@ handleSetScannedItemQty(rawAddedQty) {
         }, 250);
       },
 
+      openGridSearchResult(sheetIdx, rowNumber) {
+        if (!this.workbook) return;
+        const targetSheetIdx = Number(sheetIdx);
+        const targetRowNumber = Number(rowNumber);
+        const sheet = this.workbook.worksheets[targetSheetIdx];
+        if (!sheet || !Number.isFinite(targetRowNumber)) return;
+        const rowIndex = sheet.records.findIndex(rec => Number(rec.rowNumber) === targetRowNumber);
+        if (rowIndex < 0) {
+          this.showToast(`Could not locate row ${targetRowNumber} in \"${sheet.sheetName}\".`, 'error');
+          return;
+        }
+
+        // Cancel pending workbook-wide searches before switching back to the grid.
+        clearTimeout(this._gridSearchTimer);
+        this._gridSearchRequestId++;
+        this._gridSearchMatchedRows = null;
+        this._gridSearchMatchedQuery = '';
+        this.searchQuery = '';
+        this.filterModifiedOnly = false;
+        this.activeSheetIdx = targetSheetIdx;
+        this.activeView = 'workspace';
+
+        // Place the selected record a few rows below the top edge so it is easy to spot.
+        const rowsAbove = 4;
+        const effectiveRowHeight = this.gridRowHeight * (this.gridZoom || 1);
+        this.gridScrollTop = Math.max(0, (rowIndex - rowsAbove) * effectiveRowHeight);
+        this.gridStartIndex = Math.max(0, Math.floor(this.gridScrollTop / effectiveRowHeight) - (this.gridOverscan || 10));
+        this.toggleSidebarDrawer(false);
+        this.renderAll();
+        const scroller = document.getElementById('virtual-worksheet-scroll');
+        if (scroller) scroller.scrollTop = this.gridScrollTop;
+      },
+
       renderWorkspaceView(container) {
       const activeSheet = this.workbook.worksheets[this.activeSheetIdx];
       if (!activeSheet) return;
@@ -4310,7 +4363,7 @@ handleSetScannedItemQty(rawAddedQty) {
           ? (this._gridSearchMatchedRows || [])
           : [];
         const resultsHtml = this._gridSearchMatchedQuery !== rawQ ? '<div class="py-12 text-center text-slate-400">Searching…</div>' : matches.length ? matches.slice(0, 300).map(({sheet, sheetIdx, rec, values}) => `
-          <article class="flex flex-nowrap items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 min-w-max whitespace-nowrap">
+          <article role="button" tabindex="0" aria-label="Open ${escapeHtml(sheet.sheetName)}, row ${rec.rowNumber}" onclick="app.openGridSearchResult(${sheetIdx}, ${Number(rec.rowNumber)})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();app.openGridSearchResult(${sheetIdx}, ${Number(rec.rowNumber)});}" class="flex flex-nowrap items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 min-w-max whitespace-nowrap cursor-pointer hover:border-emerald-500/70 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-colors">
             <strong class="shrink-0 text-xs text-emerald-300">${escapeHtml(sheet.sheetName)}</strong>
             <span class="shrink-0 text-[10px] font-mono text-slate-500">Row ${rec.rowNumber}</span>
             ${values.filter(v => v.value !== '').map(v => `<span class="inline-flex shrink-0 items-baseline gap-1.5 text-xs"><span class="text-[10px] uppercase tracking-wide text-slate-500">${escapeHtml(v.header)}:</span><span class="text-slate-200">${escapeHtml(v.value)}</span></span>`).join('<span class="shrink-0 text-slate-700">·</span>')}
@@ -4366,7 +4419,7 @@ handleSetScannedItemQty(rawAddedQty) {
           const isTargetFflz = h.colIndex === targetCol;
           const isTargetFullUpc = h.colIndex === fullUpcCol;
           return `
-            <th class="py-3 px-4 border-r border-slate-800 select-none ${
+            <th class="py-2 px-3 border-r border-slate-800 select-none ${
               isTargetFflz
                 ? 'bg-emerald-950/40 text-emerald-300 border-b-2 border-b-emerald-500 min-w-[185px]'
                 : isTargetFullUpc
@@ -4439,7 +4492,7 @@ handleSetScannedItemQty(rawAddedQty) {
               const collisionItems = isTruncatedCodeCol ? this.codeIndex.get(normDigits) : null;
 
               return `
-                <td class="py-2.5 px-4 border-r border-slate-800/60 text-slate-300">
+                <td class="py-1.5 px-3 border-r border-slate-800/60 text-slate-300">
                   <div class="flex items-center justify-between gap-2">
                     <span class="${isTruncatedCodeCol ? 'font-mono text-white font-semibold' : ''}">${escapeHtml(rawText)}</span>
                     <div class="flex items-center gap-1">
@@ -4454,7 +4507,7 @@ handleSetScannedItemQty(rawAddedQty) {
 
             if (isTargetFullUpc) {
               return `
-                <td class="py-2 px-3 border-r border-slate-800 ${rec.isFullUpcModified ? 'bg-indigo-500/15' : 'bg-indigo-950/10'}">
+                <td class="py-1.5 px-3 border-r border-slate-800 ${rec.isFullUpcModified ? 'bg-indigo-500/15' : 'bg-indigo-950/10'}">
                   <input
                     type="text"
                     ${isLocked ? 'disabled' : ''}
@@ -4472,7 +4525,7 @@ handleSetScannedItemQty(rawAddedQty) {
             }
 
             return `
-              <td class="py-2 px-3 border-r border-slate-800 ${
+              <td class="py-1.5 px-3 border-r border-slate-800 ${
                 rec.validationError ? 'bg-rose-950/40' : rec.isModified ? 'bg-amber-500/10' : 'bg-emerald-950/15'
               }">
                 <div class="flex items-center gap-1">
