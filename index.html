@@ -3313,7 +3313,17 @@
         }
         const doc = win.document;
         doc.open();
-        doc.write('<!doctype html><html><head><meta charset="utf-8"><title></title><style></style></head><body></body></html>');
+        doc.write('<!doctype html><html><head><meta charset="utf-8"><title></title><style></style></head><body>  <script>
+    // Register the PWA service worker. Service workers require HTTPS or localhost.
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch((error) => {
+          console.error('PWA service worker registration failed:', error);
+        });
+      }, { once: true });
+    }
+  </script>
+</body></html>');
         doc.close();
         doc.title = String(title || 'Print Document');
         const styleEl = doc.querySelector('style');
@@ -7418,6 +7428,16 @@
       document.addEventListener('DOMContentLoaded', () => UISAuth.init(), { once: true });
     } else {
       UISAuth.init();
+    }
+  </script>
+  <script>
+    // Register the PWA service worker. Service workers require HTTPS or localhost.
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch((error) => {
+          console.error('PWA service worker registration failed:', error);
+        });
+      }, { once: true });
     }
   </script>
 </body>
