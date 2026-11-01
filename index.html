@@ -400,6 +400,12 @@
       box-shadow:0 0 0 13px rgba(56,214,176,.14),0 0 48px rgba(23,190,153,.55),inset 0 2px 8px rgba(255,255,255,.55);
     }
     #pos-hold-scan-button .pos-scan-caption, #inventory-hold-scan-button .inventory-scan-caption { font-size:9px; font-weight:800; letter-spacing:.07em; color:#06231e !important; }
+    /* While either hold-to-scan control is active, suppress mobile long-press text selection. */
+    body.hold-scan-active, body.hold-scan-active * {
+      -webkit-user-select:none !important; user-select:none !important;
+      -webkit-touch-callout:none !important; -webkit-user-drag:none !important;
+    }
+    body.hold-scan-active { -webkit-tap-highlight-color:transparent; }
 
     #pos-camera-overlay, #inventory-camera-overlay {
       position:fixed; inset:0; z-index:10002; display:flex; align-items:center; justify-content:center; padding:16px;
@@ -3900,7 +3906,18 @@
         if (window.lucide?.createIcons) lucide.createIcons();
       },
 
+      installHoldScanSelectionGuard() {
+        if (this._holdScanSelectionGuardInstalled) return;
+        const suppressDuringHold = event => {
+          if (document.body.classList.contains('hold-scan-active')) event.preventDefault();
+        };
+        document.addEventListener('selectstart', suppressDuringHold, true);
+        document.addEventListener('contextmenu', suppressDuringHold, true);
+        this._holdScanSelectionGuardInstalled = true;
+      },
+
       syncMainInventoryHoldScanButton() {
+        this.installHoldScanSelectionGuard();
         let button = document.getElementById('inventory-hold-scan-button');
         if (!button) {
           button = document.createElement('button');
@@ -3910,6 +3927,7 @@
           button.addEventListener('pointerdown', event => {
             if (event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) return;
             event.preventDefault();
+            document.body.classList.add('hold-scan-active');
             if (this._inventoryHoldActive) return;
             this._inventoryHoldPointerId = event.pointerId;
             this.beginMainInventoryHoldScan(event);
@@ -3954,6 +3972,7 @@
         if (pointerId != null && this._inventoryHoldPointerId !== pointerId) return;
         if (!this._inventoryHoldActive && !this._scanStream && !this._scanRaf && !this.isScannerOpen) return;
         this._inventoryHoldActive = false;
+        document.body.classList.remove('hold-scan-active');
         this._inventoryHoldPointerId = null;
         ++this._inventoryHoldGeneration;
         const button = document.getElementById('inventory-hold-scan-button');
@@ -3968,6 +3987,7 @@
       },
 
       syncPosHoldScanButton() {
+        this.installHoldScanSelectionGuard();
         this.syncPosHeaderControls();
         let button = document.getElementById('pos-hold-scan-button');
         if (!button) {
@@ -3978,6 +3998,7 @@
           button.addEventListener('pointerdown', event => {
             if (event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) return;
             event.preventDefault();
+            document.body.classList.add('hold-scan-active');
             if (this._posScanHoldActive) return;
             this._posHoldPointerId = event.pointerId;
             this.beginPosHoldScan(event);
@@ -4022,6 +4043,7 @@
         const posOverlay = document.getElementById('pos-camera-overlay');
         if (!this._posScanHoldActive && !this._posScanStream && !this._posScanRaf && (!posOverlay || posOverlay.classList.contains('hidden'))) return;
         this._posScanHoldActive = false;
+        document.body.classList.remove('hold-scan-active');
         this._posHoldPointerId = null;
         const button = document.getElementById('pos-hold-scan-button');
         if (button) {
@@ -4141,6 +4163,7 @@
       async stopPosCameraScanner() {
         ++this._posScanGeneration;
         this._posScanHoldActive = false;
+        document.body.classList.remove('hold-scan-active');
         if (this._posScanRaf) cancelAnimationFrame(this._posScanRaf);
         this._posScanRaf = null;
         if (this._posScanStream) this._posScanStream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} });
@@ -5582,6 +5605,7 @@
 
       async stopCameraScanner(render = true) {
         this._scanActive = false;
+        document.body.classList.remove('hold-scan-active');
         if (this._scanRaf) cancelAnimationFrame(this._scanRaf);
         this._scanRaf = null;
         if (this._scanStream) { for (const track of this._scanStream.getTracks()) { try { track.stop(); } catch (_) {} } }
