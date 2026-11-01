@@ -388,7 +388,7 @@
       color:#06231e !important; background:radial-gradient(circle at 32% 25%,#e1fff5 0%,#83ead1 28%,#25c6a2 66%,#087c70 100%) !important;
       box-shadow:0 0 0 8px rgba(56,214,176,.09),0 12px 42px rgba(23,190,153,.34),inset 0 2px 7px rgba(255,255,255,.65);
       display:none; flex-direction:column; align-items:center; justify-content:center; gap:2px;
-      user-select:none; -webkit-user-select:none; touch-action:none; cursor:pointer;
+      user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; touch-action:none; cursor:pointer;
     }
     #pos-hold-scan-button { bottom:calc(22px + env(safe-area-inset-bottom)); }
     #inventory-hold-scan-button { bottom:calc(92px + env(safe-area-inset-bottom)); }
@@ -3912,17 +3912,23 @@
             try { button.setPointerCapture(event.pointerId); } catch (_) {}
             this.beginMainInventoryHoldScan(event);
           });
-          button.addEventListener('lostpointercapture', event => {
-            if (this._inventoryHoldPointerId === event.pointerId) this.endMainInventoryHoldScan();
-          });
+          const finishInventoryHold = event => {
+            if (event && this._inventoryHoldPointerId !== event.pointerId) return;
+            event?.preventDefault?.();
+            this.endMainInventoryHoldScan(event?.pointerId);
+          };
+          button.addEventListener('pointerup', finishInventoryHold);
+          button.addEventListener('pointercancel', finishInventoryHold);
+          button.addEventListener('lostpointercapture', finishInventoryHold);
           button.addEventListener('contextmenu', event => event.preventDefault());
           if (!this._inventoryHoldListenersReady) {
             document.addEventListener('pointerup', event => {
-              if (this._inventoryHoldPointerId != null && event.pointerId === this._inventoryHoldPointerId) this.endMainInventoryHoldScan();
+              if (this._inventoryHoldPointerId != null && event.pointerId === this._inventoryHoldPointerId) this.endMainInventoryHoldScan(event.pointerId);
             }, true);
             document.addEventListener('pointercancel', event => {
-              if (this._inventoryHoldPointerId === event.pointerId) this.endMainInventoryHoldScan();
+              if (this._inventoryHoldPointerId === event.pointerId) this.endMainInventoryHoldScan(event.pointerId);
             }, true);
+            window.addEventListener('blur', () => { if (this._inventoryHoldActive) this.endMainInventoryHoldScan(); });
             document.addEventListener('visibilitychange', () => { if (document.hidden && this._inventoryHoldActive) this.endMainInventoryHoldScan(); });
             this._inventoryHoldListenersReady = true;
           }
@@ -3948,8 +3954,9 @@
         await this.startCameraScanner('inventory', generation);
       },
 
-      async endMainInventoryHoldScan() {
-        if (!this._inventoryHoldActive && !this._scanStream && !this._scanRaf) return;
+      async endMainInventoryHoldScan(pointerId = null) {
+        if (pointerId != null && this._inventoryHoldPointerId !== pointerId) return;
+        if (!this._inventoryHoldActive && !this._scanStream && !this._scanRaf && !this.isScannerOpen) return;
         this._inventoryHoldActive = false;
         this._inventoryHoldPointerId = null;
         ++this._inventoryHoldGeneration;
@@ -3959,7 +3966,9 @@
           const caption = button.querySelector('.inventory-scan-caption');
           if (caption) caption.textContent = 'HOLD TO SCAN';
         }
-        if (this._scanPurpose === 'inventory' && this.isScannerOpen) await this.stopCameraScanner();
+        if (this._scanPurpose === 'inventory' && (this.isScannerOpen || this._scanStream || this._scanRaf || document.getElementById('inventory-camera-overlay') && !document.getElementById('inventory-camera-overlay').classList.contains('hidden'))) {
+          await this.stopCameraScanner(false);
+        }
       },
 
       syncPosHoldScanButton() {
@@ -3977,16 +3986,22 @@
             try { button.setPointerCapture(event.pointerId); } catch (_) {}
             this.beginPosHoldScan(event);
           });
-          button.addEventListener('lostpointercapture', event => {
-            if (this._posHoldPointerId === event.pointerId) this.endPosHoldScan();
-          });
+          const finishPosHold = event => {
+            if (event && this._posHoldPointerId !== event.pointerId) return;
+            event?.preventDefault?.();
+            this.endPosHoldScan(event?.pointerId);
+          };
+          button.addEventListener('pointerup', finishPosHold);
+          button.addEventListener('pointercancel', finishPosHold);
+          button.addEventListener('lostpointercapture', finishPosHold);
           if (!this._posHoldListenersReady) {
             document.addEventListener('pointerup', event => {
-              if (this._posHoldPointerId != null && event.pointerId === this._posHoldPointerId) this.endPosHoldScan();
+              if (this._posHoldPointerId != null && event.pointerId === this._posHoldPointerId) this.endPosHoldScan(event.pointerId);
             }, true);
             document.addEventListener('pointercancel', event => {
-              if (this._posHoldPointerId === event.pointerId) this.endPosHoldScan();
+              if (this._posHoldPointerId === event.pointerId) this.endPosHoldScan(event.pointerId);
             }, true);
+            window.addEventListener('blur', () => { if (this._posScanHoldActive) this.endPosHoldScan(); });
             document.addEventListener('visibilitychange', () => { if (document.hidden && this._posScanHoldActive) this.endPosHoldScan(); });
             this._posHoldListenersReady = true;
           }
@@ -4013,8 +4028,10 @@
         await this.startPosCameraScanner();
       },
 
-      async endPosHoldScan() {
-        if (!this._posScanHoldActive && !this._posScanStream && !this._posScanRaf) return;
+      async endPosHoldScan(pointerId = null) {
+        if (pointerId != null && this._posHoldPointerId !== pointerId) return;
+        const posOverlay = document.getElementById('pos-camera-overlay');
+        if (!this._posScanHoldActive && !this._posScanStream && !this._posScanRaf && (!posOverlay || posOverlay.classList.contains('hidden'))) return;
         this._posScanHoldActive = false;
         this._posHoldPointerId = null;
         const button = document.getElementById('pos-hold-scan-button');
@@ -5497,6 +5514,10 @@
           this._scanLastFrameAt = 0;
           this._scanLoop();
         } catch (err) {
+          if (isInventoryHoldStart && (!this._inventoryHoldActive || inventoryHoldGeneration !== this._inventoryHoldGeneration)) {
+            await this.stopCameraScanner(false);
+            return;
+          }
           this.scannerStatus = 'CAMERA_ERROR';
           this.renderScannerBar();
           this.showToast(`Camera unavailable (${err.message || 'Check camera permission'}).`, 'error');
