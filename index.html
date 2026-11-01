@@ -2788,7 +2788,7 @@
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
-          const request = indexedDB.open('UIS_LocalWorkspace', 5);
+          const request = indexedDB.open('UIS_LocalWorkspace', 6);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
@@ -2801,7 +2801,7 @@
             resolve(db);
           };
           request.onerror = () => { this._workspaceDbPromise = null; reject(request.error || new Error('Could not open local recovery storage')); };
-          request.onblocked = () => { this._workspaceDbPromise = null; reject(new Error('Local recovery storage is blocked by another tab')); };
+          request.onblocked = () => { this._workspaceDbPromise = null; reject(new Error('Database upgrade is waiting for another app tab. Close every open POS tab/window, then tap Retry. Your saved data is not being erased.')); };
         });
         return this._workspaceDbPromise;
       },
@@ -3313,17 +3313,7 @@
         }
         const doc = win.document;
         doc.open();
-        doc.write('<!doctype html><html><head><meta charset="utf-8"><title></title><style></style></head><body>  <script>
-    // Register the PWA service worker. Service workers require HTTPS or localhost.
-    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js').catch((error) => {
-          console.error('PWA service worker registration failed:', error);
-        });
-      }, { once: true });
-    }
-  </script>
-</body></html>');
+        doc.write('<!doctype html><html><head><meta charset="utf-8"><title></title><style></style></head><body></body></html>');
         doc.close();
         doc.title = String(title || 'Print Document');
         const styleEl = doc.querySelector('style');
@@ -7311,18 +7301,36 @@
       isSessionValid() {
         return Boolean(this.getCurrentUser());
       },
-      startApp() {
+      async startApp() {
         const gate = document.getElementById('uis-auth-gate');
         const logout = document.getElementById('uis-auth-logout');
-        document.body.classList.remove('uis-auth-locked');
-        if (gate) gate.hidden = true;
-        if (logout) logout.hidden = false;
-        if (!window.__UIS_APP_STARTED__) {
-          window.__UIS_APP_STARTED__ = true;
-          app.init().then(() => {
-            app.recordActivity('OPERATOR_SIGNED_IN', { details: 'Operator unlocked local POS workspace.' }, { category: 'session', affectsWorkbook: false });
-          });
+        const message = document.getElementById('uis-auth-message');
+        if (window.__UIS_APP_STARTING__) return window.__UIS_APP_STARTING__;
+        if (window.__UIS_APP_STARTED__) {
+          document.body.classList.remove('uis-auth-locked');
+          if (gate) gate.hidden = true;
+          if (logout) logout.hidden = false;
+          return true;
         }
+        window.__UIS_APP_STARTING__ = (async () => {
+          try {
+            await app.init();
+            window.__UIS_APP_STARTED__ = true;
+            document.body.classList.remove('uis-auth-locked');
+            if (gate) gate.hidden = true;
+            if (logout) logout.hidden = false;
+            app.recordActivity('OPERATOR_SIGNED_IN', { details: 'Operator unlocked local POS workspace.' }, { category: 'session', affectsWorkbook: false });
+            return true;
+          } catch (error) {
+            window.__UIS_APP_STARTED__ = false;
+            if (message) message.textContent = `Sign-in succeeded, but the workspace could not start: ${error?.message || error}. Your account and saved data were not deleted. Close other app tabs and retry.`;
+            try { sessionStorage.removeItem(this.sessionKey); } catch (_) {}
+            return false;
+          } finally {
+            window.__UIS_APP_STARTING__ = null;
+          }
+        })();
+        return window.__UIS_APP_STARTING__;
       },
       async logout() {
         try {
@@ -7354,7 +7362,29 @@
           return;
         }
 
-        const operators = await this.getOperators();
+        let operators;
+        try {
+          operators = await this.getOperators();
+        } catch (error) {
+          if (message) message.textContent = `Could not load local operator accounts: ${error?.message || error}`;
+          if (submit) submit.disabled = false;
+          let retry = document.getElementById('uis-auth-retry');
+          if (!retry && message) {
+            retry = document.createElement('button');
+            retry.id = 'uis-auth-retry';
+            retry.type = 'button';
+            retry.className = 'mt-2 w-full rounded-lg border border-emerald-500/40 px-3 py-2 text-xs font-semibold text-emerald-200';
+            retry.textContent = 'Retry loading local accounts';
+            message.insertAdjacentElement('afterend', retry);
+            retry.addEventListener('click', async () => {
+              retry.disabled = true;
+              retry.textContent = 'Retrying…';
+              retry.remove();
+              await this.init();
+            });
+          }
+          return;
+        }
         const isFirstSetup = operators.length === 0;
 
         if (isFirstSetup) {
@@ -7368,7 +7398,7 @@
           if (submit) submit.textContent = 'Create Manager Account & Open POS';
         }
 
-        form.addEventListener('submit', async event => {
+        if (form.dataset.uisAuthBound !== 'true') form.addEventListener('submit', async event => {
           event.preventDefault();
           if (message) message.textContent = '';
           const userVal = String(username.value || '').trim();
@@ -7395,7 +7425,7 @@
                 role,
                 expiresAt: Date.now() + this.sessionHours * 3600000
               }));
-              this.startApp();
+              await this.startApp();
               return;
             }
 
@@ -7415,13 +7445,14 @@
               expiresAt: Date.now() + this.sessionHours * 3600000
             }));
             password.value = '';
-            this.startApp();
+            await this.startApp();
           } catch (err) {
             if (message) message.textContent = err?.message || 'Authentication error.';
           } finally {
             if (submit) submit.disabled = false;
           }
         });
+        form.dataset.uisAuthBound = 'true';
 
         if (window.lucide) lucide.createIcons();
         username.focus();

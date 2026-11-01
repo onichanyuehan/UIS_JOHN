@@ -23,3 +23,6 @@ IMPORTANT NOTES
 - The app uses Tailwind CSS and Google Fonts from CDNs. The service worker caches successful
   resource responses after they have been loaded online, but first launch requires internet.
 - This package makes the page installable; it does not create a hosted public URL.
+
+LOGIN RECOVERY UPDATE
+This build uses IndexedDB schema version 6 and a fresh service-worker cache. Before updating, close every open tab/window of the POS app so the database upgrade can complete. Then reload the hosted HTTPS app. The upgrade preserves existing inventory and sales stores.
