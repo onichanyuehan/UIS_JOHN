@@ -3918,10 +3918,10 @@
           if (!this._inventoryHoldListenersReady) {
             // Listen on the document rather than relying on pointer capture. This also
             // catches release when the camera overlay covers the original button.
-            document.addEventListener('pointerup', event => {
+            window.addEventListener('pointerup', event => {
               if (this._inventoryHoldPointerId != null && event.pointerId === this._inventoryHoldPointerId) this.endMainInventoryHoldScan(event.pointerId);
             }, true);
-            document.addEventListener('pointercancel', event => {
+            window.addEventListener('pointercancel', event => {
               if (this._inventoryHoldPointerId === event.pointerId) this.endMainInventoryHoldScan(event.pointerId);
             }, true);
             window.addEventListener('blur', () => { if (this._inventoryHoldActive) this.endMainInventoryHoldScan(); });
@@ -3984,10 +3984,10 @@
           }, { passive:false });
           if (!this._posHoldListenersReady) {
             // Global release handling remains active even while the overlay is visible.
-            document.addEventListener('pointerup', event => {
+            window.addEventListener('pointerup', event => {
               if (this._posHoldPointerId != null && event.pointerId === this._posHoldPointerId) this.endPosHoldScan(event.pointerId);
             }, true);
-            document.addEventListener('pointercancel', event => {
+            window.addEventListener('pointercancel', event => {
               if (this._posHoldPointerId === event.pointerId) this.endPosHoldScan(event.pointerId);
             }, true);
             window.addEventListener('blur', () => { if (this._posScanHoldActive) this.endPosHoldScan(); });
@@ -4125,11 +4125,10 @@
               const normalized = normalizeCodeString(code);
               if (!this._posScanLocked || (normalized !== this._posScanLastCode && Date.now() - this._posScanLastAt > 900)) {
                 this._posScanLocked = true;
-                const itemAdded = this.handlePosScannedBarcode(code);
-                if (itemAdded) {
-                  await this.endPosHoldScan();
-                  return;
-                }
+                this.handlePosScannedBarcode(code);
+                // Stop on the first decoded barcode, including an unknown product.
+                await this.endPosHoldScan();
+                return;
               }
             } else if (++this._posScanMisses >= 5) this._posScanLocked = false;
           } catch (_) {} finally { this._posScanBusy = false; }
@@ -5565,6 +5564,12 @@
             this._scanLocked = true; this._scanFrameLastCode = code; this._scanFrameLastAt = Date.now();
             try { if (navigator.vibrate) navigator.vibrate(60); } catch (_) {}
             this.handleProcessScannedBarcode(code);
+            // Hold-to-scan contract: the first valid barcode ends this camera session,
+            // whether or not the barcode matches an inventory row.
+            if (this._scanPurpose === 'inventory' && this._inventoryHoldActive) {
+              await this.endMainInventoryHoldScan();
+              return;
+            }
           }
         } else {
           this._scanMisses = (this._scanMisses || 0) + 1;
