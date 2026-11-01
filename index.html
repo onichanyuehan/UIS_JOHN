@@ -2788,7 +2788,7 @@
         if (this._workspaceDbPromise) return this._workspaceDbPromise;
         this._workspaceDbPromise = new Promise((resolve, reject) => {
           if (!('indexedDB' in window)) { reject(new Error('IndexedDB is unavailable')); return; }
-          const request = indexedDB.open('UIS_LocalWorkspace', 4);
+          const request = indexedDB.open('UIS_LocalWorkspace', 5);
           request.onupgradeneeded = () => {
             const db = request.result;
             if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
@@ -7189,15 +7189,19 @@
         return (h >>> 0).toString(16);
       },
       async getOperators() {
-        try {
-          const db = await app.openWorkspaceDatabase();
-          return await new Promise((resolve, reject) => {
-            const tx = db.transaction('operators', 'readonly');
-            const req = tx.objectStore('operators').getAll();
-            req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
-            req.onerror = () => reject(req.error);
-          });
-        } catch (_) { return []; }
+        const db = await app.openWorkspaceDatabase();
+        if (!db.objectStoreNames.contains('operators')) {
+          throw new Error('The local operator database is missing its accounts store. Close other app tabs, reload this page, and try again.');
+        }
+        return await new Promise((resolve, reject) => {
+          let tx;
+          try { tx = db.transaction('operators', 'readonly'); }
+          catch (error) { reject(new Error(`Could not open local operator accounts: ${error.message || error}`)); return; }
+          const req = tx.objectStore('operators').getAll();
+          req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+          req.onerror = () => reject(req.error || new Error('Could not read local operator accounts.'));
+          tx.onabort = () => reject(tx.error || new Error('Reading local operator accounts was interrupted.'));
+        });
       },
       async saveOperator(username, password, role = 'Manager', profile = {}) {
         const cleanUser = String(username || '').trim();
