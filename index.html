@@ -3912,17 +3912,18 @@
             try { button.setPointerCapture(event.pointerId); } catch (_) {}
             this.beginMainInventoryHoldScan(event);
           });
+          button.addEventListener('lostpointercapture', event => {
+            if (this._inventoryHoldPointerId === event.pointerId) this.endMainInventoryHoldScan();
+          });
           button.addEventListener('contextmenu', event => event.preventDefault());
           if (!this._inventoryHoldListenersReady) {
             document.addEventListener('pointerup', event => {
               if (this._inventoryHoldPointerId != null && event.pointerId === this._inventoryHoldPointerId) this.endMainInventoryHoldScan();
             }, true);
             document.addEventListener('pointercancel', event => {
-              // Some mobile browsers cancel the pointer while showing a permission prompt.
-              // Do not abort a camera request that has not produced a stream yet.
-              if (this._inventoryHoldPointerId === event.pointerId && (this._scanStream || this._scanRaf)) this.endMainInventoryHoldScan();
+              if (this._inventoryHoldPointerId === event.pointerId) this.endMainInventoryHoldScan();
             }, true);
-            document.addEventListener('visibilitychange', () => { if (document.hidden && this._scanStream) this.endMainInventoryHoldScan(); });
+            document.addEventListener('visibilitychange', () => { if (document.hidden && this._inventoryHoldActive) this.endMainInventoryHoldScan(); });
             this._inventoryHoldListenersReady = true;
           }
           document.body.appendChild(button);
@@ -3976,16 +3977,17 @@
             try { button.setPointerCapture(event.pointerId); } catch (_) {}
             this.beginPosHoldScan(event);
           });
+          button.addEventListener('lostpointercapture', event => {
+            if (this._posHoldPointerId === event.pointerId) this.endPosHoldScan();
+          });
           if (!this._posHoldListenersReady) {
             document.addEventListener('pointerup', event => {
-              if (this._posHoldPointerId == null || event.pointerId === this._posHoldPointerId) this.endPosHoldScan();
+              if (this._posHoldPointerId != null && event.pointerId === this._posHoldPointerId) this.endPosHoldScan();
             }, true);
             document.addEventListener('pointercancel', event => {
-              // Permission UI can interrupt pointer tracking on some mobile browsers.
-              // Keep the pending getUserMedia request alive until it resolves.
-              if (this._posHoldPointerId === event.pointerId && (this._posScanStream || this._posScanRaf)) this.endPosHoldScan();
+              if (this._posHoldPointerId === event.pointerId) this.endPosHoldScan();
             }, true);
-            document.addEventListener('visibilitychange', () => { if (document.hidden && this._posScanStream) this.endPosHoldScan(); });
+            document.addEventListener('visibilitychange', () => { if (document.hidden && this._posScanHoldActive) this.endPosHoldScan(); });
             this._posHoldListenersReady = true;
           }
           button.addEventListener('contextmenu', event => event.preventDefault());
