@@ -7094,15 +7094,26 @@
         if (!dateKeys.includes(this.activitySelectedDate)) this.activitySelectedDate = dateKeys[0] || '';
         const selectedEvents = this.activitySelectedDate ? (grouped.get(this.activitySelectedDate) || []) : [];
         const shown = selectedEvents.slice(0, 500);
+        const formatDateTab = key => {
+          if (key === 'unknown-date') return 'Unknown date';
+          const [y,m,d] = key.split('-').map(Number);
+          return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        };
+        const dateTabs = dateKeys.map(key => `<button type="button" onclick="app.selectActivityDate('${escapeHtml(key)}')" aria-pressed="${key === this.activitySelectedDate ? 'true' : 'false'}" class="shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold transition ${key === this.activitySelectedDate ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200' : 'border-white/10 bg-white/[.03] text-neutral-400 hover:bg-white/[.07] hover:text-white'}"><span>${escapeHtml(formatDateTab(key))}</span><span class="ml-2 text-[10px] opacity-70">${(grouped.get(key) || []).length}</span></button>`).join('');
         const rows = shown.map(e => `<tr class="border-t border-white/5 align-top"><td class="p-3 text-white"><div class="font-semibold">${escapeHtml(e.itemName || e.action)}</div><div class="text-[10px] text-neutral-400">${escapeHtml(e.action)}</div></td><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 whitespace-nowrap font-semibold text-emerald-300">${escapeHtml(e.actor || 'Operator')}</td><td class="p-3 text-neutral-300">${escapeHtml(e.workbookName || '')} · ${escapeHtml(e.sheetName || '')} ${e.rowNumber ? `· Row ${escapeHtml(e.rowNumber)}` : ''}</td><td class="p-3 text-neutral-400">${e.quantityChange !== '' && e.quantityChange !== undefined ? `<span class="text-emerald-300 font-mono">Δ ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</span> · ` : ''}${escapeHtml(e.details || '')}</td></tr>`).join('');
         container.innerHTML = `
-          <section class="w-full min-w-0 space-y-4">
-            <div class="flex flex-wrap items-start justify-between gap-3 px-3 sm:px-4 py-3">
-              <div><h2 class="text-base font-bold text-white">Activity Log</h2><p class="mt-1 text-xs text-neutral-400">Complete local audit log of inventory and POS actions.</p></div>
-              <button onclick="app.exportActivityLog('all')" class="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">Export Activity CSV</button>
+          <section class="w-full min-w-0 space-y-3">
+            <div class="flex items-center justify-between gap-3 px-3 sm:px-4 pt-2 pb-1">
+              <h2 class="text-base font-bold text-white">Activity Log</h2>
+              <button onclick="app.exportActivityLog('all')" class="shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500">Export CSV</button>
+            </div>
+            <div class="w-full min-w-0 px-3 sm:px-4">
+              <div class="flex items-center gap-2 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:thin]" role="tablist" aria-label="Daily Activity Logs">
+                ${dateTabs || '<span class="py-2 text-xs text-neutral-500">No daily logs yet</span>'}
+              </div>
             </div>
             <input type="search" value="${escapeHtml(this.activitySearchQuery)}" oninput="app.filterActivityLog(this.value)" placeholder="Search operator, action, item, barcode, worksheet…" class="w-[calc(100%-24px)] mx-3 sm:w-[calc(100%-32px)] sm:mx-4 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-white" />
-            ${shown.length ? `<div id="activity-log-table-wrap" class="overflow-auto w-full"><table id="activity-log-table" class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Operator</th><th class="p-3">Location</th><th class="p-3">Details</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="py-12 text-center text-sm text-neutral-500">No activity recorded yet.</div>`}
+            ${shown.length ? `<div id="activity-log-table-wrap" class="overflow-auto w-full"><table id="activity-log-table" class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Operator</th><th class="p-3">Location</th><th class="p-3">Details</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="py-12 text-center text-sm text-neutral-500">${all.length ? 'No activity for this date or search.' : 'No activity recorded yet.'}</div>`}
           </section>`;
       },
 
