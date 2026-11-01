@@ -318,12 +318,24 @@
     }
 
     #activity-log-table {
-      zoom: .6;
-      width: 166.6667% !important;
-      min-width: 1633px !important;
+      zoom: .65;
+      width: 153.846% !important;
+      min-width: 1508px !important;
       table-layout: auto;
     }
-    #activity-log-table th, #activity-log-table td, #activity-log-table th *, #activity-log-table td * { line-height: 12px !important; }
+    #activity-log-table th, #activity-log-table td, #activity-log-table th *, #activity-log-table td * { line-height: 10px !important; }
+    .activity-log-compact { gap: 6px !important; }
+    .activity-log-compact .activity-log-heading { padding: 2px 8px 0 !important; gap: 6px !important; min-height: 28px; }
+    .activity-log-compact .activity-log-heading h2 { font-size: 13px !important; line-height: 16px !important; }
+    .activity-log-compact .activity-log-export { padding: 5px 9px !important; font-size: 10px !important; line-height: 13px !important; border-radius: 7px !important; }
+    .activity-log-compact .activity-log-dates { padding: 0 8px !important; }
+    .activity-log-compact .activity-log-tabs { gap: 4px !important; padding-bottom: 3px !important; }
+    .activity-log-compact .activity-log-tab { padding: 4px 7px !important; border-radius: 6px !important; font-size: 10px !important; line-height: 13px !important; }
+    .activity-log-compact .activity-log-tab-count { margin-left: 4px !important; font-size: 9px !important; }
+    .activity-log-compact .activity-log-search { width: calc(100% - 16px) !important; margin: 0 8px !important; padding: 6px 8px !important; border-radius: 7px !important; font-size: 10px !important; line-height: 14px !important; }
+    .activity-log-compact #activity-log-table-wrap { max-height: calc(100% - 76px); }
+    .activity-log-compact #activity-log-table th, .activity-log-compact #activity-log-table td { padding: 5px 6px !important; }
+    .activity-log-compact .activity-log-empty { padding: 24px 8px !important; font-size: 11px !important; }
 
     header.sticky.uis-app-header {
       position: sticky; top: 0; z-index: 30;
@@ -7099,21 +7111,21 @@
           const [y,m,d] = key.split('-').map(Number);
           return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
         };
-        const dateTabs = dateKeys.map(key => `<button type="button" onclick="app.selectActivityDate('${escapeHtml(key)}')" aria-pressed="${key === this.activitySelectedDate ? 'true' : 'false'}" class="shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold transition ${key === this.activitySelectedDate ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200' : 'border-white/10 bg-white/[.03] text-neutral-400 hover:bg-white/[.07] hover:text-white'}"><span>${escapeHtml(formatDateTab(key))}</span><span class="ml-2 text-[10px] opacity-70">${(grouped.get(key) || []).length}</span></button>`).join('');
+        const dateTabs = dateKeys.map(key => `<button type="button" onclick="app.selectActivityDate('${escapeHtml(key)}')" aria-pressed="${key === this.activitySelectedDate ? 'true' : 'false'}" class="activity-log-tab shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold transition ${key === this.activitySelectedDate ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200' : 'border-white/10 bg-white/[.03] text-neutral-400 hover:bg-white/[.07] hover:text-white'}"><span>${escapeHtml(formatDateTab(key))}</span><span class="activity-log-tab-count ml-2 text-[10px] opacity-70">${(grouped.get(key) || []).length}</span></button>`).join('');
         const rows = shown.map(e => `<tr class="border-t border-white/5 align-top"><td class="p-3 text-white"><div class="font-semibold">${escapeHtml(e.itemName || e.action)}</div><div class="text-[10px] text-neutral-400">${escapeHtml(e.action)}</div></td><td class="p-3 whitespace-nowrap font-mono text-neutral-400">${escapeHtml(fmt(e.timestamp))}</td><td class="p-3 whitespace-nowrap font-semibold text-emerald-300">${escapeHtml(e.actor || 'Operator')}</td><td class="p-3 text-neutral-300">${escapeHtml(e.workbookName || '')} · ${escapeHtml(e.sheetName || '')} ${e.rowNumber ? `· Row ${escapeHtml(e.rowNumber)}` : ''}</td><td class="p-3 text-neutral-400">${e.quantityChange !== '' && e.quantityChange !== undefined ? `<span class="text-emerald-300 font-mono">Δ ${Number(e.quantityChange)>0?'+':''}${escapeHtml(e.quantityChange)}</span> · ` : ''}${escapeHtml(e.details || '')}</td></tr>`).join('');
         container.innerHTML = `
-          <section class="w-full min-w-0 space-y-3">
-            <div class="flex items-center justify-between gap-3 px-3 sm:px-4 pt-2 pb-1">
+          <section class="activity-log-compact w-full min-w-0 flex flex-col">
+            <div class="activity-log-heading flex items-center justify-between px-3 sm:px-4 pt-2 pb-1">
               <h2 class="text-base font-bold text-white">Activity Log</h2>
-              <button onclick="app.exportActivityLog('all')" class="shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500">Export CSV</button>
+              <button onclick="app.exportActivityLog('all')" class="activity-log-export shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500">Export CSV</button>
             </div>
-            <div class="w-full min-w-0 px-3 sm:px-4">
-              <div class="flex items-center gap-2 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:thin]" role="tablist" aria-label="Daily Activity Logs">
+            <div class="activity-log-dates w-full min-w-0 px-3 sm:px-4">
+              <div class="activity-log-tabs flex items-center gap-2 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:thin]" role="tablist" aria-label="Daily Activity Logs">
                 ${dateTabs || '<span class="py-2 text-xs text-neutral-500">No daily logs yet</span>'}
               </div>
             </div>
-            <input type="search" value="${escapeHtml(this.activitySearchQuery)}" oninput="app.filterActivityLog(this.value)" placeholder="Search operator, action, item, barcode, worksheet…" class="w-[calc(100%-24px)] mx-3 sm:w-[calc(100%-32px)] sm:mx-4 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-white" />
-            ${shown.length ? `<div id="activity-log-table-wrap" class="overflow-auto w-full"><table id="activity-log-table" class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Operator</th><th class="p-3">Location</th><th class="p-3">Details</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="py-12 text-center text-sm text-neutral-500">${all.length ? 'No activity for this date or search.' : 'No activity recorded yet.'}</div>`}
+            <input type="search" value="${escapeHtml(this.activitySearchQuery)}" oninput="app.filterActivityLog(this.value)" placeholder="Search operator, action, item, barcode, worksheet…" class="activity-log-search w-[calc(100%-24px)] mx-3 sm:w-[calc(100%-32px)] sm:mx-4 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-white" />
+            ${shown.length ? `<div id="activity-log-table-wrap" class="overflow-auto w-full"><table id="activity-log-table" class="w-full min-w-[980px] text-left text-xs"><thead class="sticky top-0 bg-[#222] text-neutral-400"><tr><th class="p-3">What changed</th><th class="p-3">When</th><th class="p-3">Operator</th><th class="p-3">Location</th><th class="p-3">Details</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="activity-log-empty py-12 text-center text-sm text-neutral-500">${all.length ? 'No activity for this date or search.' : 'No activity recorded yet.'}</div>`}
           </section>`;
       },
 

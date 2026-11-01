@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'uis-pos-pwa-v4';
+const CACHE_VERSION = 'uis-pos-pwa-v5';
 const APP_SHELL = [
   './',
   './index.html',
