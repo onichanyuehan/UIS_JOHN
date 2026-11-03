@@ -8716,9 +8716,12 @@
           const todayDailySheet = sheets.find(sh => this.getDsrCsrDailySheetDateKey(sh.name) === todayKey && sh.state !== 'hidden' && sh.state !== 'veryHidden');
           const deviceDateSheet = sheets.find(sh => sh.name === this.salesReportWorkbook.deviceDateSheetName && sh.state !== 'hidden' && sh.state !== 'veryHidden');
           const preferredMonthSummary = sheets.find(sh => /^CSR SUMMARY(?:\s*[-–]\s*[A-Z]+\s+\d{4})?$/i.test(sh.name) && sh.state !== 'hidden' && sh.state !== 'veryHidden');
+          // The supplied POS-sync build opens on the matching CSR monthly summary,
+          // as specified by DSR_CSR_POS_SYNC_README. Daily tabs remain available and
+          // POS transactions still route to the device-date sheet automatically.
           this.salesReportSheetName = previousFileName === file.name && sheets.some(sh => sh.name === previousSheetName && sh.state !== 'hidden' && sh.state !== 'veryHidden')
-            ? (todayDailySheet?.name || deviceDateSheet?.name || previousSheetName)
-            : (todayDailySheet?.name || deviceDateSheet?.name || preferredMonthSummary?.name || firstVisibleSheet.name);
+            ? (preferredMonthSummary?.name || todayDailySheet?.name || deviceDateSheet?.name || previousSheetName)
+            : (preferredMonthSummary?.name || todayDailySheet?.name || deviceDateSheet?.name || firstVisibleSheet.name);
           const selectedSheet = sheets.find(sh => sh.name === this.salesReportSheetName) || firstVisibleSheet;
           this.gridZoom = Math.max(0.5, Math.min(2, (Number(selectedSheet.zoomScale) || 100) / 100));
           const isFixedDsrTemplate = this.isDsrCsr2026Template(this.salesReportWorkbook);
