@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="UIS POS" />
   <meta name="description" content="Production local-only Point of Sale (POS) and Excel OpenXML inventory system with hardware barcode scanner support, IndexedDB persistence, and thermal receipt printing." />
-  <title>Universal Inventory & Local POS System · Full POS ↔ DSR/CSR Sync</title>
+  <title>Universal Inventory & Local POS System · DSR/CSR POS Sync</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Google Fonts: Inter & JetBrains Mono -->
@@ -4321,40 +4321,16 @@
         // These are the sales buckets in the uploaded DSR / CSR 2026 template.
         return ['Singles','GNR','GNS','Local','Hot Toys','Cosbaby','Cosbi(CBX)','Funko','Loungefly','Rokimoto','Urdu','Flotaku','Pop Mart','52 Toys','Muse/Nullset','Pyramid','Toys','Banpresto','Blokees','Funism','Ohku','Top Toys','Kayou','Card Fun','KPOP','Others'];
       },
-      normalizeDsrCsrCategory(value) {
-        const raw = String(value || '').trim();
-        if (!raw) return '';
-        const norm = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const aliases = {
-          localcomics:'local', comicslocal:'local',
-          cosbicbx:'cosbicbx', cosbi:'cosbicbx',
-          '52toys':'52toys', popmart:'popmart', cardfun:'cardfun',
-          musenullset:'musenullset', muse:'musenullset',
-          hottoys:'hottoys', singles:'singles', gnr:'gnr', gns:'gns'
-        };
-        const wanted = aliases[norm] || norm;
-        return this.getPosCategoryOptions().find(option => option.toLowerCase().replace(/[^a-z0-9]/g, '') === wanted) || '';
-      },
-      isPosSaleVoided(sale) {
-        return !!(sale && (sale.voided || sale.voidedAt || /^(void|voided|cancelled|canceled|refunded)$/i.test(String(sale.status || sale.state || '').trim())));
-      },
-      getPosSaleBusinessDate(sale) {
-        const explicit = [sale?.businessDate, sale?.localDate, sale?.saleDate].map(v => String(v || '').trim()).find(v => /^\d{4}-\d{2}-\d{2}$/.test(v));
-        if (explicit) return explicit;
-        const raw = sale?.timestamp ?? sale?.createdAt ?? sale?.dateTime ?? sale?.date;
-        if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
-        const parsed = raw instanceof Date ? raw : new Date(raw);
-        if (!Number.isFinite(parsed.getTime())) return '';
-        return `${parsed.getFullYear()}-${String(parsed.getMonth()+1).padStart(2,'0')}-${String(parsed.getDate()).padStart(2,'0')}`;
-      },
       getPosCategoryForSource(workbookName, sheetName, fallback = '') {
         const mappings = this.posConfig?.categoryMappings || {};
         const sheetKey = `${String(workbookName || '')}::${String(sheetName || '')}`;
         const workbookKey = `${String(workbookName || '')}::*`;
+        const options = this.getPosCategoryOptions();
         // A worksheet-specific mapping overrides the whole-workbook mapping.
-        const configured = this.normalizeDsrCsrCategory(mappings[sheetKey] || mappings[workbookKey] || '');
-        if (configured) return configured;
-        return this.normalizeDsrCsrCategory(fallback) || 'Others';
+        const configured = String(mappings[sheetKey] || mappings[workbookKey] || '').trim();
+        if (configured && options.includes(configured)) return configured;
+        const savedFallback = String(fallback || '').trim();
+        return options.includes(savedFallback) ? savedFallback : 'Others';
       },
       getPosInventoryDescription(item) {
         if (!item) return '';
@@ -4396,8 +4372,8 @@
         if (!item) return 'Others';
         const mappingKey = `${String(item.workbookName || '')}::${String(item.sheetName || '')}`;
         const workbookKey = `${String(item.workbookName || '')}::*`;
-        const configured = this.normalizeDsrCsrCategory(this.posConfig?.categoryMappings?.[mappingKey] || this.posConfig?.categoryMappings?.[workbookKey] || '');
-        if (configured) return configured;
+        const configured = String(this.posConfig?.categoryMappings?.[mappingKey] || this.posConfig?.categoryMappings?.[workbookKey] || '').trim();
+        if (configured && this.getPosCategoryOptions().includes(configured)) return configured;
         // Prefer a real Category / Product Category column in the inventory row when no mapping is set.
         try {
           const headers = Array.isArray(item.sheet?.headers) ? item.sheet.headers : [];
@@ -4405,7 +4381,7 @@
           if (categoryHeader) {
             const raw = String(item.record?.cells?.[categoryHeader.colIndex]?.value || '').trim();
             if (raw) {
-              const match = this.normalizeDsrCsrCategory(raw);
+              const match = this.getPosCategoryOptions().find(option => option.toLowerCase() === raw.toLowerCase());
               if (match) return match;
             }
           }
@@ -4432,10 +4408,11 @@
       },
       getPosCategorySalesSummary(dateKey = '') {
         const totals = new Map();
-        this.getDsrCsrPosLedger().forEach(sale => {
-          if (!sale || this.isPosSaleVoided(sale)) return;
-          const saleDate = this.getPosSaleBusinessDate(sale);
-          if (!saleDate) return;
+        (Array.isArray(this.sales) ? this.sales : []).forEach(sale => {
+          if (!sale || sale.voided) return;
+          const stamp = new Date(sale.timestamp);
+          if (!Number.isFinite(stamp.getTime())) return;
+          const saleDate = `${stamp.getFullYear()}-${String(stamp.getMonth()+1).padStart(2,'0')}-${String(stamp.getDate()).padStart(2,'0')}`;
           if (dateKey && saleDate !== dateKey) return;
           const lines = Array.isArray(sale.lines) ? sale.lines : [];
           const subtotal = lines.reduce((sum, line) => sum + (Number(line.lineTotal) || (Number(line.quantity)||0)*(Number(line.unitPrice)||0)), 0);
@@ -4531,10 +4508,7 @@
           this.showToast(`Sales invoice number ${invoiceNumber} has already been used. Change the starting number in POS Settings.`, 'error'); return;
         }
         const saleId = `POS-${new Date().toISOString().replace(/[-:TZ.]/g,'').slice(0,14)}-${String(Date.now()).slice(-4)}`;
-        const saleClock = new Date();
-        const now = saleClock.toISOString();
-        const businessDate = `${saleClock.getFullYear()}-${String(saleClock.getMonth()+1).padStart(2,'0')}-${String(saleClock.getDate()).padStart(2,'0')}`;
-        const receiptLines = [];
+        const now = new Date().toISOString(), receiptLines = [];
         try {
           lines.forEach(line => {
             const item = line.item, workbookIdx = item.workbookIdx;
@@ -4568,7 +4542,7 @@
             });
           });
           const sale = {
-            id: saleId, invoiceNumber, timestamp: now, businessDate, localDate: businessDate, status: 'completed', actor: this.getCurrentActor(), paymentMethod: method,
+            id: saleId, invoiceNumber, timestamp: now, actor: this.getCurrentActor(), paymentMethod: method,
             paymentReference: String(this.posPaymentReference || '').trim(),
             customerNote: String(this.posCustomerNote || '').trim(),
             subtotal: totals.subtotal, discount: totals.discount, taxRate: totals.taxRate,
@@ -4587,13 +4561,11 @@
           this.posPaymentReference = '';
           this.posCustomerNote = '';
           this.posDiscountValue = '';
+          this.getWorkspaceWorkbooks().forEach(wb => { if (wb) { wb._uisSession = wb._uisSession || {}; wb._uisSession.sales = this.sales; } });
           this.rebuildIndex();
-          const reportSync = this.syncPosLedgerToDsrCsr();
-          if (this.salesReportWorkbook && this.isDsrCsr2026Template(this.salesReportWorkbook)) {
-            this.showToast(`Sale ${saleId} completed. DSR/CSR updated: ${reportSync.synchronizedCells} mapped cells across ${reportSync.synchronizedSheets} sheets. Total ${this.formatMoney(total)}.`, 'success');
-          } else {
-            this.showToast(`Sale ${saleId} completed. Import the DSR/CSR workbook to synchronize this transaction into the report cells. Total ${this.formatMoney(total)}.`, 'success');
-          }
+          this.scheduleWorkspaceSave();
+          this.renderAll();
+          this.showToast(`Sale ${saleId} completed. Total ${this.formatMoney(total)}.`, 'success');
         } catch (error) {
           this.showToast(error?.message || 'The sale could not be completed.', 'error');
         }
@@ -4601,7 +4573,7 @@
       voidPosSale(saleId) {
         const sale = (this.sales || []).find(entry => entry.id === saleId);
         if (!sale) { this.showToast('Sale record not found.', 'error'); return; }
-        if (this.isPosSaleVoided(sale)) { this.showToast(`Sale ${sale.id} has already been voided.`, 'error'); return; }
+        if (sale.voided) { this.showToast(`Sale ${sale.id} has already been voided.`, 'error'); return; }
         const now = new Date().toISOString();
         try {
           (sale.lines || []).forEach(line => {
@@ -4622,16 +4594,13 @@
             }, { category: 'sales' });
           });
           sale.voided = true;
-          sale.status = 'voided';
           sale.voidedAt = now;
           sale.voidedBy = this.getCurrentActor();
+          this.getWorkspaceWorkbooks().forEach(wb => { if (wb) { wb._uisSession = wb._uisSession || {}; wb._uisSession.sales = this.sales; } });
           this.rebuildIndex();
-          const reportSync = this.syncPosLedgerToDsrCsr();
-          if (this.salesReportWorkbook && this.isDsrCsr2026Template(this.salesReportWorkbook)) {
-            this.showToast(`Sale ${sale.id} voided, stock restored, and ${reportSync.synchronizedCells} DSR/CSR cells recalculated.`, 'success');
-          } else {
-            this.showToast(`Sale ${sale.id} voided and stock restored. Import the DSR/CSR workbook to update report cells.`, 'success');
-          }
+          this.scheduleWorkspaceSave();
+          this.renderAll();
+          this.showToast(`Sale ${sale.id} voided and stock restored.`, 'success');
         } catch (err) {
           this.showToast(err?.message || 'Could not void sale.', 'error');
         }
@@ -4639,7 +4608,7 @@
       exportPosSales() {
         const rows = [];
         (this.sales || []).forEach(sale => (sale.lines || []).forEach(line => rows.push([
-          sale.invoiceNumber || '', sale.id, sale.timestamp, sale.actor || 'Unknown', this.isPosSaleVoided(sale) ? 'VOIDED' : 'COMPLETED', sale.paymentMethod, sale.paymentReference || '',
+          sale.invoiceNumber || '', sale.id, sale.timestamp, sale.actor || 'Unknown', sale.voided ? 'VOIDED' : 'COMPLETED', sale.paymentMethod, sale.paymentReference || '',
           line.itemName, line.category || 'Others', line.barcode, line.workbookName || '', line.sheetName, line.rowNumber,
           line.quantity, line.unitPrice, line.lineTotal, sale.subtotal ?? sale.total, sale.discount ?? 0, sale.taxAmount ?? 0, sale.total,
           sale.paymentMethod === 'Cash' ? sale.cashReceived : '', sale.paymentMethod === 'Cash' ? sale.change : '', sale.customerNote || ''
@@ -4658,15 +4627,15 @@
         this.openPrintWindow(
           `Sales Invoice ${sale.invoiceNumber || sale.id}`,
           "@page{size:80mm auto;margin:4mm}body{font:12px 'Courier New',monospace;max-width:300px;margin:0 auto;color:#000}h1{text-align:center;font-size:16px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin:10px 0}td,th{padding:4px 2px;border-bottom:1px dashed #999;text-align:left;vertical-align:top}td:last-child,th:last-child{text-align:right}.total{text-align:right;font-size:15px;font-weight:bold;margin-top:6px}.muted{color:#444;font-size:10px}.center{text-align:center}",
-          `<h1>${safe(this.posConfig.storeName || 'SALES RECEIPT')}</h1>${this.posConfig.storeAddress?`<div class="center muted">${safe(this.posConfig.storeAddress)}</div>`:''}${this.posConfig.storeTin?`<div class="center muted">TIN: ${safe(this.posConfig.storeTin)}</div>`:''}<hr><div class="muted">Sales Invoice No.: ${safe(sale.invoiceNumber || sale.id)}${this.isPosSaleVoided(sale)?' (VOIDED)':''}<br>POS Transaction ID: ${safe(sale.id)}<br>Date: ${safe(new Date(sale.timestamp).toLocaleString())}<br>Cashier: ${safe(sale.actor || 'Operator')}${sale.customerNote?`<br>Note: ${safe(sale.customerNote)}`:''}</div><table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table><div style="text-align:right">Subtotal: ${sym}${Number(sale.subtotal ?? sale.total).toFixed(2)}${Number(sale.discount)>0?`<br>Discount: −${sym}${Number(sale.discount).toFixed(2)}`:''}${Number(sale.taxAmount)>0?`<br>Tax (${Number(sale.taxRate||0)}% ${sale.taxInclusive?'Incl.':'Excl.'}): ${sym}${Number(sale.taxAmount).toFixed(2)}`:''}</div><div class="total">TOTAL: ${sym}${Number(sale.total).toFixed(2)}</div><div>Payment: ${safe(sale.paymentMethod)}${sale.paymentReference?` (${safe(sale.paymentReference)})`:''}</div>${sale.paymentMethod==='Cash'?`<div>Cash Tendered: ${sym}${Number(sale.cashReceived).toFixed(2)}<br>Change: ${sym}${Number(sale.change).toFixed(2)}</div>`:''}<hr><p class="center muted">${safe(this.posConfig.receiptFooter || 'Thank you!')}</p>`
+          `<h1>${safe(this.posConfig.storeName || 'SALES RECEIPT')}</h1>${this.posConfig.storeAddress?`<div class="center muted">${safe(this.posConfig.storeAddress)}</div>`:''}${this.posConfig.storeTin?`<div class="center muted">TIN: ${safe(this.posConfig.storeTin)}</div>`:''}<hr><div class="muted">Sales Invoice No.: ${safe(sale.invoiceNumber || sale.id)}${sale.voided?' (VOIDED)':''}<br>POS Transaction ID: ${safe(sale.id)}<br>Date: ${safe(new Date(sale.timestamp).toLocaleString())}<br>Cashier: ${safe(sale.actor || 'Operator')}${sale.customerNote?`<br>Note: ${safe(sale.customerNote)}`:''}</div><table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table><div style="text-align:right">Subtotal: ${sym}${Number(sale.subtotal ?? sale.total).toFixed(2)}${Number(sale.discount)>0?`<br>Discount: −${sym}${Number(sale.discount).toFixed(2)}`:''}${Number(sale.taxAmount)>0?`<br>Tax (${Number(sale.taxRate||0)}% ${sale.taxInclusive?'Incl.':'Excl.'}): ${sym}${Number(sale.taxAmount).toFixed(2)}`:''}</div><div class="total">TOTAL: ${sym}${Number(sale.total).toFixed(2)}</div><div>Payment: ${safe(sale.paymentMethod)}${sale.paymentReference?` (${safe(sale.paymentReference)})`:''}</div>${sale.paymentMethod==='Cash'?`<div>Cash Tendered: ${sym}${Number(sale.cashReceived).toFixed(2)}<br>Change: ${sym}${Number(sale.change).toFixed(2)}</div>`:''}<hr><p class="center muted">${safe(this.posConfig.receiptFooter || 'Thank you!')}</p>`
         );
       },
 
       printPosZReport() {
         const todayStr = new Date().toDateString();
-        const todaysSales = this.getDsrCsrPosLedger().filter(s => this.getPosSaleBusinessDate(s) === this.getPosSaleBusinessDate({ timestamp: new Date() }));
-        const activeSales = todaysSales.filter(s => !this.isPosSaleVoided(s));
-        const voidedSales = todaysSales.filter(s => this.isPosSaleVoided(s));
+        const todaysSales = (this.sales || []).filter(s => new Date(s.timestamp).toDateString() === todayStr);
+        const activeSales = todaysSales.filter(s => !s.voided);
+        const voidedSales = todaysSales.filter(s => s.voided);
         const gross = activeSales.reduce((sum, s) => sum + Number(s.subtotal ?? s.total ?? 0), 0);
         const discounts = activeSales.reduce((sum, s) => sum + Number(s.discount ?? 0), 0);
         const taxes = activeSales.reduce((sum, s) => sum + Number(s.taxAmount ?? 0), 0);
@@ -5105,7 +5074,7 @@
         const change = Number.isFinite(received) ? Math.max(0, Math.round((received - totals.total) * 100) / 100) : 0;
         const money = value => this.formatMoney(value);
         const todayStr = new Date().toDateString();
-        const todaysActiveSales = (this.sales || []).filter(s => !this.isPosSaleVoided(s) && new Date(s.timestamp).toDateString() === todayStr);
+        const todaysActiveSales = (this.sales || []).filter(s => !s.voided && new Date(s.timestamp).toDateString() === todayStr);
         const todaysRevenue = todaysActiveSales.reduce((sum, s) => sum + Number(s.total || 0), 0);
 
         container.innerHTML = `<div class="space-y-4">
@@ -5224,13 +5193,13 @@
                 <div>
                   <div class="text-xs font-semibold text-white flex items-center gap-2">
                     <span>Invoice ${escapeHtml(sale.invoiceNumber || 'N/A')} · ${money(sale.total)}</span><span class="block text-[9px] text-neutral-500">Transaction ${escapeHtml(sale.id)}</span>
-                    ${this.isPosSaleVoided(sale) ? '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px]">VOIDED</span>' : '<span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px]">PAID</span>'}
+                    ${sale.voided ? '<span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px]">VOIDED</span>' : '<span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px]">PAID</span>'}
                   </div>
                   <div class="text-[10px] text-neutral-500">${escapeHtml(new Date(sale.timestamp).toLocaleString())} · ${escapeHtml(sale.paymentMethod)}${sale.paymentReference ? ` (${escapeHtml(sale.paymentReference)})` : ''} · Cashier: ${escapeHtml(sale.actor || 'Operator')}</div>
                 </div>
                 <div class="flex items-center gap-2">
                   <button type="button" onclick="app.printPosReceipt('${escapeHtml(sale.id)}')" class="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-emerald-300 hover:bg-white/5">Print Receipt</button>
-                  ${!this.isPosSaleVoided(sale) ? `<button type="button" onclick="app.voidPosSale('${escapeHtml(sale.id)}')" class="rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-900/50">Void & Restock</button>` : ''}
+                  ${!sale.voided ? `<button type="button" onclick="app.voidPosSale('${escapeHtml(sale.id)}')" class="rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-900/50">Void & Restock</button>` : ''}
                 </div>
               </div>`).join('') || '<div class="py-5 text-center text-xs text-neutral-500">No completed sales yet.</div>'}
             </div>
@@ -7040,7 +7009,7 @@
           });
         }));
         if (dot) dot.classList.toggle('hidden', !(edited > 0 || issues > 0));
-        grid.innerHTML = `<div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Imported Files</div><div class="text-base font-bold text-white">${this.getWorkspaceWorkbooks().length}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Total Items</div><div class="text-base font-bold text-white">${totalItems}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Edited Rows</div><div class="text-base font-bold text-emerald-400">${edited}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">POS Sales</div><div class="text-base font-bold text-indigo-400">${this.getDsrCsrPosLedger().filter(s => !this.isPosSaleVoided(s)).length}</div></div>`;
+        grid.innerHTML = `<div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Imported Files</div><div class="text-base font-bold text-white">${this.getWorkspaceWorkbooks().length}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Total Items</div><div class="text-base font-bold text-white">${totalItems}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">Edited Rows</div><div class="text-base font-bold text-emerald-400">${edited}</div></div><div class="bg-[#1e1e1e] border border-white/5 rounded-xl p-2.5"><div class="text-[10px] text-neutral-400">POS Sales</div><div class="text-base font-bold text-indigo-400">${(this.sales || []).filter(s => !s.voided).length}</div></div>`;
       },
 
       renderNavTabs() {
@@ -8563,12 +8532,12 @@
         const names = new Set((workbook?.sheets || []).map(sheet => String(sheet?.name || '').trim().toLowerCase()));
         const hasSummary = names.has('csr summary');
         const hasCategorySheet = names.has('new cat sales');
-        const hasDailySheets = [...names].some(name => /^(\d{1,2})-(\d{1,2})-\d{4}$/.test(name));
+        const hasDailySheets = (workbook?.sheets || []).some(sheet => !!this.getDsrCsrDailySheetDateKey(sheet?.name));
         return hasSummary && hasCategorySheet && hasDailySheets;
       },
 
       getDsrCsr2026AutoMapping(sheetName) {
-        const datedSheet = /^(\d{1,2})-(\d{1,2})-(\d{4})$/.test(String(sheetName || ''));
+        const datedSheet = this.getDsrCsrDailySheetDateKey(sheetName) !== '';
         const categoryCols = Array.from({ length: 26 }, (_, index) => index + 3); // D:AC, zero-based
         if (datedSheet) return {
           headerRow: 3, subHeaderRow: 4, columnHeaderRows: {}, dateCol: -2,
@@ -8624,77 +8593,35 @@
       },
 
       adaptDsrCsrWorkbookToDeviceMonth(workbook = this.salesReportWorkbook) {
-        // Rebase EVERY dated daily tab to the device's current month/year while
-        // retaining each day number and its worksheet contents. The mapping is
-        // also used during XLSX export to update formulas and defined-name refs.
-        // A source day that does not exist in the target month (e.g. day 31 in
-        // February/April/June/September/November) is retained as an archived tab.
+        // Adopt the device-local month and year for every imported daily DSR tab.
+        // The day number is retained; impossible dates (e.g. day 31 in February)
+        // are left unchanged rather than silently rolling into another month.
         if (!workbook || !Array.isArray(workbook.sheets)) return false;
         const now = new Date();
         const year = now.getFullYear();
         const month = now.getMonth() + 1;
-        const dayOfMonth = now.getDate();
-        const todayKey = `${year}-${String(month).padStart(2,'0')}-${String(dayOfMonth).padStart(2,'0')}`;
-        const todayName = `${dayOfMonth}-${month}-${year}`;
-        const daysInMonth = new Date(year, month, 0).getDate();
-        const datedSheets = workbook.sheets
-          .map(sh => ({ sheet: sh, key: this.getDsrCsrDailySheetDateKey(sh?.name) }))
-          .filter(item => item.key)
-          .sort((a,b) => a.key.localeCompare(b.key));
-        if (!datedSheets.length) return false;
-        if (!workbook.dailySheetNameMap || typeof workbook.dailySheetNameMap !== 'object') workbook.dailySheetNameMap = {};
-        const nameMap = {};
+        const monthNames = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
         let changed = false;
-        for (const { sheet, key } of datedSheets) {
-          const sourceName = String(sheet.name);
-          const sourceDay = Number(key.slice(8,10));
-          if (sourceDay >= 1 && sourceDay <= daysInMonth) {
-            const targetName = `${sourceDay}-${month}-${year}`;
-            const collision = workbook.sheets.find(other => other !== sheet && String(other.name).toLowerCase() === targetName.toLowerCase());
-            // A collision is acceptable only when it is another dated sheet that
-            // is itself being rebased; otherwise preserve the original name safely.
-            const collisionIsDated = collision && datedSheets.some(item => item.sheet === collision);
-            if (collision && !collisionIsDated) continue;
-            if (sourceName !== targetName) {
-              sheet.originalDailySheetName = sheet.originalDailySheetName || sourceName;
-              sheet.name = targetName;
-              nameMap[sourceName] = targetName;
-              workbook.dailySheetNameMap[sourceName] = targetName;
-              changed = true;
-            }
-          } else {
-            const archiveName = `ARCHIVE - ${sourceName}`;
-            if (sourceName !== archiveName && !workbook.sheets.some(other => other !== sheet && other.name === archiveName)) {
-              sheet.originalDailySheetName = sheet.originalDailySheetName || sourceName;
-              sheet.name = archiveName;
-              nameMap[sourceName] = archiveName;
-              workbook.dailySheetNameMap[sourceName] = archiveName;
-              changed = true;
-            }
-          }
-        }
-        // Keep the in-memory formula model in step with the worksheet-name map.
-        // The export path applies the same map to the underlying XLSX XML package.
-        const rewriteFormula = formula => {
-          let value = String(formula || '');
-          for (const [oldName, newName] of Object.entries(nameMap)) {
-            const quote = name => "'" + String(name).replace(/'/g, "''") + "'";
-            value = value.split(quote(oldName) + '!').join(quote(newName) + '!');
-            value = value.split(oldName + '!').join(newName + '!');
-          }
-          return value;
-        };
-        if (Object.keys(nameMap).length) {
-          for (const sheet of workbook.sheets) {
-            for (const row of (sheet.formulas || [])) {
-              if (Array.isArray(row)) for (let i=0; i<row.length; i++) if (row[i]) row[i] = rewriteFormula(row[i]);
-            }
-          }
-        }
-        workbook.deviceDateSheetName = todayName;
-        workbook.deviceDateApplied = todayKey;
-        workbook.deviceMonthApplied = `${year}-${String(month).padStart(2,'0')}`;
-        workbook.dailySheetNameMap = { ...workbook.dailySheetNameMap, ...nameMap };
+        const dailySheets = workbook.sheets.map(sheet => ({ sheet, key: this.getDsrCsrDailySheetDateKey(sheet?.name) })).filter(entry => entry.key);
+        const planned = new Map();
+        dailySheets.forEach(({ sheet, key }) => {
+          const day = Number(key.slice(8, 10));
+          const daysInDeviceMonth = new Date(year, month, 0).getDate();
+          if (day < 1 || day > daysInDeviceMonth) return;
+          const target = `${day}-${monthNames[month - 1]}-${year}`;
+          if (!planned.has(target.toLowerCase())) planned.set(target.toLowerCase(), []);
+          planned.get(target.toLowerCase()).push({ sheet, target });
+        });
+        planned.forEach(entries => {
+          // Avoid destructive name collisions if a source workbook contains
+          // duplicate day tabs from multiple months.
+          if (entries.length !== 1) return;
+          const { sheet, target } = entries[0];
+          if (sheet.name === target) return;
+          sheet.sourceName = sheet.sourceName || sheet.name;
+          sheet.name = target;
+          changed = true;
+        });
         return changed;
       },
 
@@ -8717,19 +8644,15 @@
           sheets.splice(0, sheets.length, ...adaptedSheets);
           if (previousFileName !== file.name) { this.salesGridScrollTop=0; this.salesGridScrollLeft=0; this.salesGridStartIndex=-1; this.salesGridSearchQuery=''; this.salesGridEditedOnly=false; }
           const firstVisibleSheet = sheets.find(sh => sh.state !== 'hidden' && sh.state !== 'veryHidden') || sheets[0];
-          // All dated daily tabs have been rebased to the device's current month above;
-          // day numbers and sheet contents are preserved, with excess day tabs archived.
+          // Automatically adopt the device's local date when opening a recognized DSR/CSR workbook.
+          // Keep historical tabs intact; choose today's existing daily tab rather than hardcoding a month.
           const localToday = new Date();
           const todayKey = `${localToday.getFullYear()}-${String(localToday.getMonth()+1).padStart(2,'0')}-${String(localToday.getDate()).padStart(2,'0')}`;
           const todayDailySheet = sheets.find(sh => this.getDsrCsrDailySheetDateKey(sh.name) === todayKey && sh.state !== 'hidden' && sh.state !== 'veryHidden');
-          const deviceDateSheet = sheets.find(sh => sh.name === this.salesReportWorkbook.deviceDateSheetName && sh.state !== 'hidden' && sh.state !== 'veryHidden');
           const preferredMonthSummary = sheets.find(sh => /^CSR SUMMARY(?:\s*[-–]\s*[A-Z]+\s+\d{4})?$/i.test(sh.name) && sh.state !== 'hidden' && sh.state !== 'veryHidden');
-          // The supplied POS-sync build opens on the matching CSR monthly summary,
-          // as specified by DSR_CSR_POS_SYNC_README. Daily tabs remain available and
-          // POS transactions still route to the device-date sheet automatically.
           this.salesReportSheetName = previousFileName === file.name && sheets.some(sh => sh.name === previousSheetName && sh.state !== 'hidden' && sh.state !== 'veryHidden')
-            ? (preferredMonthSummary?.name || todayDailySheet?.name || deviceDateSheet?.name || previousSheetName)
-            : (preferredMonthSummary?.name || todayDailySheet?.name || deviceDateSheet?.name || firstVisibleSheet.name);
+            ? (todayDailySheet?.name || previousSheetName)
+            : (todayDailySheet?.name || preferredMonthSummary?.name || firstVisibleSheet.name);
           const selectedSheet = sheets.find(sh => sh.name === this.salesReportSheetName) || firstVisibleSheet;
           this.gridZoom = Math.max(0.5, Math.min(2, (Number(selectedSheet.zoomScale) || 100) / 100));
           const isFixedDsrTemplate = this.isDsrCsr2026Template(this.salesReportWorkbook);
@@ -8737,21 +8660,13 @@
           // The supplied 2026 DSR/CSR workbook has a fixed, known cell layout.
           // Always use its built-in template map rather than carrying old manual column choices forward.
           this.salesReportMapping = isFixedDsrTemplate
-            ? {
-                ...(previousFileName === file.name && previousMapping ? previousMapping : {}),
-                ...defaultMapping,
-                // Keep saved/manual per-column rules while enforcing the corrected
-                // DSR/CSR template's known header rows and complete D:AC category map.
-                columnRules: { ...(defaultMapping.columnRules || {}), ...(previousFileName === file.name ? (previousMapping?.columnRules || {}) : {}) },
-                columnHeaderRows: { ...(defaultMapping.columnHeaderRows || {}), ...(previousFileName === file.name ? (previousMapping?.columnHeaderRows || {}) : {}) },
-                categoryColumns: [...(defaultMapping.categoryColumns || [])]
-              }
+            ? defaultMapping
             : (previousFileName === file.name && previousMapping ? { ...defaultMapping, ...previousMapping, columnRules: { ...(defaultMapping.columnRules || {}), ...(previousMapping.columnRules || {}) } } : defaultMapping);
           this.salesReportCategoryColumns = [...(this.salesReportMapping.categoryColumns || [])];
           this.salesReportImportAllDated = previousFileName === file.name ? previousImportAllDated : false;
           await this.saveSalesReportStore();
           this.renderMainView();
-          this.showToast(isFixedDsrTemplate ? `Loaded ${sheets.length} worksheets. All daily DSR tabs were mapped to ${this.salesReportWorkbook.deviceMonthApplied || todayKey.slice(0,7)} using your device date; the active day is ${this.salesReportWorkbook.deviceDateApplied || todayKey}.` : `Loaded ${sheets.length} sales worksheet(s). Review the automatic column suggestions.`, 'success');
+          this.showToast(isFixedDsrTemplate ? `Loaded ${sheets.length} worksheets. The 2026 DSR/CSR template was recognized and mapped automatically.` : `Loaded ${sheets.length} sales worksheet(s). Review the automatic column suggestions.`, 'success');
         } catch (error) {
           this.showToast(error?.message || 'Could not read the sales file.', 'error');
         }
@@ -8872,10 +8787,11 @@
         const targetSheet = String(sheetName || '');
         if (!targetWorkbook || !targetSheet) return 0;
         let total = 0;
-        this.getDsrCsrPosLedger().forEach(sale => {
-          if (!sale || this.isPosSaleVoided(sale)) return;
-          const saleDate = this.getPosSaleBusinessDate(sale);
-          if (!saleDate) return;
+        (Array.isArray(this.sales) ? this.sales : []).forEach(sale => {
+          if (!sale || sale.voided) return;
+          const stamp = new Date(sale.timestamp);
+          if (!Number.isFinite(stamp.getTime())) return;
+          const saleDate = `${stamp.getFullYear()}-${String(stamp.getMonth()+1).padStart(2,'0')}-${String(stamp.getDate()).padStart(2,'0')}`;
           if (dateKey && saleDate !== dateKey) return;
           (Array.isArray(sale.lines) ? sale.lines : []).forEach(line => {
             const lineWorkbook = String(line.workbookName || '');
@@ -8915,10 +8831,11 @@
         let total = 0;
         let matchedAny = false;
         const books = this.getWorkspaceWorkbooks();
-        this.getDsrCsrPosLedger().forEach(sale => {
-          if (!sale || this.isPosSaleVoided(sale)) return;
-          const saleDate = this.getPosSaleBusinessDate(sale);
-          if (!saleDate) return;
+        (Array.isArray(this.sales) ? this.sales : []).forEach(sale => {
+          if (!sale || sale.voided) return;
+          const stamp = new Date(sale.timestamp);
+          if (!Number.isFinite(stamp.getTime())) return;
+          const saleDate = `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')}`;
           if (dateKey && saleDate !== dateKey) return;
           const lines = Array.isArray(sale.lines) ? sale.lines : [];
           if (!lines.length) return;
@@ -9319,10 +9236,13 @@
         if (match) return `${match[3]}-${String(Number(match[1])).padStart(2,'0')}-${String(Number(match[2])).padStart(2,'0')}`;
         match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(name);
         if (match) return `${match[1]}-${String(Number(match[2])).padStart(2,'0')}-${String(Number(match[3])).padStart(2,'0')}`;
+        match = /^(\d{1,2})[- ](JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[- ](\d{4})$/i.exec(name);
+        if (match) { const months={JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12}; return `${match[3]}-${String(months[match[2].toUpperCase()]).padStart(2,'0')}-${String(Number(match[1])).padStart(2,'0')}`; }
         return '';
       },
 
-      getDsrCsrPosLedger() {
+      getDsrCsrSalesForDate(dateKey) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) return [];
         const books = this.getWorkspaceWorkbooks?.() || [];
         const pool = [
           ...(Array.isArray(this.sales) ? this.sales : []),
@@ -9331,91 +9251,24 @@
         ];
         const byId = new Map();
         pool.forEach((sale, index) => {
-          if (!sale || !Array.isArray(sale.lines) || !sale.lines.length) return;
+          if (!sale || sale.voided || !Array.isArray(sale.lines) || !sale.lines.length) return;
           const key = String(sale.id || `${sale.invoiceNumber || sale.invoiceNo || ''}|${sale.timestamp || sale.createdAt || index}`);
           const prior = byId.get(key);
-          if (!prior) { byId.set(key, sale); return; }
-          // A void/refund state must win over an older active snapshot of the same sale.
-          const saleVoided = this.isPosSaleVoided(sale), priorVoided = this.isPosSaleVoided(prior);
-          if (saleVoided && !priorVoided) { byId.set(key, sale); return; }
-          if (saleVoided === priorVoided) {
-            const saleUpdated = new Date(sale.voidedAt || sale.updatedAt || sale.timestamp || sale.createdAt || 0).getTime() || 0;
-            const priorUpdated = new Date(prior.voidedAt || prior.updatedAt || prior.timestamp || prior.createdAt || 0).getTime() || 0;
-            if (sale.lines.length > prior.lines.length || saleUpdated > priorUpdated) byId.set(key, sale);
-          }
+          // Prefer the fullest saved copy when a transaction exists in more than one workbook session.
+          if (!prior || (sale.lines.length > prior.lines.length) || (!prior.invoiceNumber && sale.invoiceNumber)) byId.set(key, sale);
         });
-        return [...byId.values()].sort((a,b) => new Date(a.timestamp || a.createdAt || 0).getTime() - new Date(b.timestamp || b.createdAt || 0).getTime());
-      },
-      syncPosLedgerToDsrCsr(options = {}) {
-        const render = options.render !== false;
-        const books = this.getWorkspaceWorkbooks?.() || [];
-        books.forEach(wb => { if (wb) { wb._uisSession = wb._uisSession || {}; wb._uisSession.sales = this.sales; } });
-        this.scheduleWorkspaceSave();
-
-        const workbook = this.salesReportWorkbook;
-        let synchronizedSheets = 0;
-        let synchronizedCells = 0;
-        if (workbook && this.isDsrCsr2026Template(workbook)) {
-          // Rebuild every dated daily sheet and both monthly rollups immediately after
-          // each checkout/void. Materialize non-formula cells into the workbook model
-          // so the imported workbook itself changes, not just a decorative overlay.
-          // Formula cells remain intact; the live grid still displays their POS-derived
-          // override and Excel recalculates the original formula on open.
-          const reportSheets = (workbook.sheets || []).filter(sheet => {
-            const name = String(sheet?.name || '');
-            return !!this.getDsrCsrDailySheetDateKey(name) ||
-              /^(?:NEW CAT SALES|CSR SUMMARY)(?:\s*[-–]\s*[A-Z]+\s+\d{4})?$/i.test(name);
-          });
-          const columnIndex = letters => {
-            let value = 0;
-            for (const char of String(letters || '')) value = value * 26 + char.charCodeAt(0) - 64;
-            return value - 1;
-          };
-          reportSheets.forEach(sheet => {
-            const overrides = this.getDsrCsrLiveCellOverrides(sheet.name);
-            if (!overrides.size) return;
-            overrides.forEach((value, cellRef) => {
-              const match = /^([A-Z]+)(\d+)$/i.exec(cellRef);
-              if (!match) return;
-              const rowIndex = Number(match[2]) - 1;
-              const colIndex = columnIndex(match[1].toUpperCase());
-              if (rowIndex < 0 || colIndex < 0) return;
-              const formula = sheet.formulas?.[rowIndex]?.[colIndex];
-              if (formula) return;
-              sheet.rows = Array.isArray(sheet.rows) ? sheet.rows : [];
-              while (sheet.rows.length <= rowIndex) sheet.rows.push([]);
-              const row = sheet.rows[rowIndex] || (sheet.rows[rowIndex] = []);
-              while (row.length <= colIndex) row.push('');
-              const normalizedValue = value === null || value === undefined ? '' : value;
-              if (row[colIndex] !== normalizedValue) {
-                row[colIndex] = normalizedValue;
-                if (sheet.cellTypes) {
-                  sheet.cellTypes[rowIndex] = sheet.cellTypes[rowIndex] || [];
-                  sheet.cellTypes[rowIndex][colIndex] = typeof normalizedValue === 'number' ? 'n' : 's';
-                }
-                synchronizedCells++;
-              }
-            });
-            synchronizedSheets++;
-          });
-          workbook.posSyncUpdatedAt = Date.now();
-          workbook.posSyncLedgerCount = this.getDsrCsrPosLedger().length;
-          workbook.posSyncSuccessfulTransactionCount = this.getDsrCsrPosLedger().filter(sale => !this.isPosSaleVoided(sale)).length;
-          workbook.posSyncSheetsUpdated = synchronizedSheets;
-          workbook.posSyncCellsUpdated = synchronizedCells;
-          // Persist the changed workbook model immediately. This includes mapped line
-          // details, category totals, transaction counts, payment values and rollups.
-          this.saveSalesReportStore().catch(error => {
-            console.error('POS-to-DSR/CSR sync persistence failed:', error);
-            this.showToast('POS sale completed, but the DSR/CSR workbook could not be saved. Export a backup and check browser storage.', 'error');
-          });
-        }
-        if (render) this.renderAll();
-        return { synchronizedSheets, synchronizedCells };
-      },
-      getDsrCsrSalesForDate(dateKey) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) return [];
-        return this.getDsrCsrPosLedger().filter(sale => !this.isPosSaleVoided(sale) && this.getPosSaleBusinessDate(sale) === dateKey);
+        const toLocalDateKey = sale => {
+          const explicit = [sale.businessDate, sale.localDate, sale.saleDate].map(v => String(v || '').trim()).find(v => /^\d{4}-\d{2}-\d{2}$/.test(v));
+          if (explicit) return explicit;
+          const raw = sale.timestamp ?? sale.createdAt ?? sale.dateTime ?? sale.date;
+          if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+          const parsed = raw instanceof Date ? raw : new Date(raw);
+          if (!Number.isFinite(parsed.getTime())) return '';
+          return `${parsed.getFullYear()}-${String(parsed.getMonth()+1).padStart(2,'0')}-${String(parsed.getDate()).padStart(2,'0')}`;
+        };
+        return [...byId.values()]
+          .filter(sale => toLocalDateKey(sale) === dateKey)
+          .sort((a,b) => new Date(a.timestamp || a.createdAt || 0).getTime() - new Date(b.timestamp || b.createdAt || 0).getTime());
       },
 
       applyDsrCsrDailyInvoiceDetails(sheetName) {
@@ -9449,30 +9302,73 @@
         if (!workbook || !sheetName || !this.isDsrCsr2026Template(workbook)) return overrides;
         const money = value => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
         const dateKeyForSheet = name => this.getDsrCsrDailySheetDateKey(name);
-        // Canonical corrected DSR map: the 26 POS categories always land in D:AC.
-        // The source has merged/duplicate two-level headings (notably Hot Toys), so
-        // deriving columns from visible labels can shift a category into its neighbour.
-        const categoryColumns = {
-          singles:4, gnr:5, gns:6, local:7, hottoys:8, cosbaby:9, cosbicbx:10,
-          funko:11, loungefly:12, rokimoto:13, urdu:14, flotaku:15, popmart:16,
-          '52toys':17, musenullset:18, pyramid:19, toys:20, banpresto:21,
-          blokees:22, funism:23, ohku:24, toptoys:25, kayou:26, cardfun:27,
-          kpop:28, others:29
-        };
+        // Category-to-cell mapping follows the uploaded corrected workbook's own
+        // two-level header (row 3 + row 4), rather than relying only on fixed names.
+        const categoryColumns = (() => {
+          const daily = (workbook.sheets || []).find(sh => this.getDsrCsrDailySheetDateKey(sh.name));
+          const rows = daily?.rows || [];
+          const parentRow = rows[2] || [], childRow = rows[3] || [];
+          const map = {};
+          let parent = '';
+          for (let zeroCol = 3; zeroCol <= 28; zeroCol++) {
+            const parentValue = String(parentRow[zeroCol] ?? '').trim();
+            const childValue = String(childRow[zeroCol] ?? '').trim();
+            if (parentValue) parent = parentValue;
+            const labels = [childValue, parent, childValue && parent ? `${parent} ${childValue}` : '']
+              .filter(Boolean);
+            labels.forEach(label => { map[label.toLowerCase()] = zeroCol + 1; map[label.toLowerCase().replace(/[^a-z0-9]/g,'')] = zeroCol + 1; });
+          }
+          // Synonyms preserve POS product category labels while matching workbook headers.
+          const aliases = {
+            'local comics':['local','local comics'], 'muse null set':['muse/nullset','muse/null set'],
+            'cosbi cbx':['cosbi(cbx)'], '52toys':['52 toys'], 'popmart':['pop mart'],
+            'cardfun':['card fun'], 'hottoys':['hot toys']
+          };
+          Object.entries(aliases).forEach(([alias, targets]) => {
+            const found = targets.map(t => map[t] ?? map[t.replace(/[^a-z0-9]/g,'')]).find(Boolean);
+            if (found) { map[alias] = found; map[alias.replace(/[^a-z0-9]/g,'')] = found; }
+          });
+          return map;
+        })();
         const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g,'');
-        const categoryCol = category => categoryColumns[norm(this.normalizeDsrCsrCategory(category) || category)] || categoryColumns.others;
+        const categoryCol = category => categoryColumns[String(category || '').toLowerCase()] || categoryColumns[norm(category)] || 29;
         const reportPeriod = this.getDsrCsrMonthlyPeriod(sheetName);
         const reportYear = reportPeriod.year;
         const reportMonth = reportPeriod.month - 1;
         const daysInReportMonth = reportPeriod.daysInMonth;
         const reportMonthNumber = reportPeriod.month;
         const reportMonthKey = reportPeriod.monthKey;
-        // Keep voided entries in the reconciliation ledger so a POS invoice that
-        // was already exported can be removed from DSR totals if it is later voided.
-        const allLedgerSales = this.getDsrCsrPosLedger();
-        const saleDateKey = sale => this.getPosSaleBusinessDate(sale);
-        const ledgerSalesForDate = dateKey => allLedgerSales.filter(sale => saleDateKey(sale) === dateKey);
-        const salesForDate = dateKey => ledgerSalesForDate(dateKey).filter(sale => !this.isPosSaleVoided(sale));
+        // Read the transaction ledger from the app state and any workbook session
+        // snapshots. This avoids missing sales when the active workspace restored its
+        // ledger from a workbook session after the POS view was opened.
+        const salePool = [
+          ...(Array.isArray(this.sales) ? this.sales : []),
+          ...((this.getWorkspaceWorkbooks?.() || []).flatMap(wb => Array.isArray(wb?._uisSession?.sales) ? wb._uisSession.sales : []))
+        ];
+        const saleById = new Map();
+        salePool.forEach(sale => {
+          if (!sale || sale.voided || /void|cancel|refund|failed|declin|reject|pending|incomplete|unpaid/i.test(String(sale.status || sale.transactionStatus || sale.paymentStatus || '')) || (String(sale.status || sale.transactionStatus || sale.paymentStatus || '').trim() && !/complete|success|paid|approved|captured|settled/i.test(String(sale.status || sale.transactionStatus || sale.paymentStatus || ''))) || !Array.isArray(sale.lines)) return;
+          const key = String(sale.id || `${sale.invoiceNumber || ''}|${sale.timestamp || sale.createdAt || ''}`);
+          if (key) saleById.set(key, sale);
+        });
+        const allSales = [...saleById.values()];
+        const isSuccessfulSale = sale => {
+          if (!sale || sale.voided === true || sale.isVoided === true) return false;
+          const status = String(sale.status || sale.transactionStatus || sale.paymentStatus || '').trim().toLowerCase();
+          if (/void|cancel|refund|failed|declin|reject|pending|incomplete|unpaid/i.test(status)) return false;
+          // This POS creates a sale record only after payment succeeds; older
+          // records have no status field, so an empty status remains valid.
+          return !status || /complete|success|paid|approved|captured|settled/i.test(status);
+        };
+        const saleDateKey = sale => {
+          const explicit = String(sale?.businessDate || sale?.localDate || sale?.saleDate || '').trim();
+          if (/^\d{4}-\d{2}-\d{2}$/.test(explicit)) return explicit;
+          const raw = sale?.timestamp ?? sale?.createdAt ?? sale?.dateTime ?? sale?.date;
+          if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+          const d = new Date(raw);
+          return Number.isFinite(d.getTime()) ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` : '';
+        };
+        const salesForDate = dateKey => allSales.filter(sale => isSuccessfulSale(sale) && saleDateKey(sale) === dateKey);
         const netLinesForSales = sales => {
           const out = [];
           sales.forEach(sale => {
@@ -9501,8 +9397,7 @@
         if (dateKey) {
           const sheet = workbook.sheets.find(sh => sh.name === sheetName);
           const rows = sheet?.rows || [];
-          const allDateLedgerSales = ledgerSalesForDate(dateKey);
-          const allDateSales = allDateLedgerSales.filter(sale => !this.isPosSaleVoided(sale));
+          const allDateSales = salesForDate(dateKey);
           const numeric = value => {
             if (value === null || value === undefined || String(value).trim() === '') return 0;
             const n = Number(String(value).replace(/[₱,$\s]/g, '').replace(/\((.*)\)/, '-$1'));
@@ -9513,12 +9408,6 @@
           let quantity = 0;
           const existingInvoices = new Set();
           let lastExistingExcelRow = 4;
-          const posInvoiceFor = sale => {
-            const raw = String(sale.invoiceNumber || sale.salesInvoiceNumber || sale.invoiceNo || sale.id || `${sale.timestamp || ''}`).trim();
-            return raw.startsWith('POS-') ? raw : `POS-${raw}`;
-          };
-          const ledgerInvoiceToSale = new Map(allDateLedgerSales.map(sale => [posInvoiceFor(sale), sale]));
-          const persistedLedgerInvoices = new Set();
           for (let ri = 4; ri < Math.min(rows.length, 1500); ri++) {
             const row = rows[ri] || [];
             const hasTransactionData = row.slice(0, 30).some(value => value !== null && value !== undefined && String(value).trim() !== '');
@@ -9526,34 +9415,15 @@
             lastExistingExcelRow = ri + 1;
             const invoice = String(row[0] ?? '').trim();
             if (invoice) existingInvoices.add(invoice);
-            const ledgerSale = ledgerInvoiceToSale.get(invoice);
-            if (ledgerSale) {
-              // These rows were generated from the POS ledger. Rebuild their report
-              // contribution from the current ledger state, so later voids are removed
-              // without deleting the original transaction detail from the source file.
-              persistedLedgerInvoices.add(invoice);
-              if (this.isPosSaleVoided(ledgerSale)) {
-                const desc = String(row[1] ?? 'POS transaction');
-                if (!/^VOIDED\s*[·-]/i.test(desc)) set(`B${ri+1}`, `VOIDED · ${desc}`);
-                // Keep the invoice audit trail, but remove its reportable quantity
-                // and category amount from the visible transaction detail row.
-                set(`C${ri+1}`, 0);
-                uniqueCategoryCols.forEach(col => set(`${colIndexToLetter(col)}${ri+1}`, 0));
-              }
-              continue;
-            }
-            // Non-POS/manual source rows remain authoritative and are preserved.
             quantity += numeric(row[2]);
             uniqueCategoryCols.forEach(col => categoryTotalsByCol.set(col, (categoryTotalsByCol.get(col) || 0) + numeric(row[col - 1])));
           }
-          const activeLedgerEntries = netLinesForSales(allDateSales);
-          activeLedgerEntries.forEach(entry => {
-            const col = categoryCol(entry.category);
-            categoryTotalsByCol.set(col, (categoryTotalsByCol.get(col) || 0) + entry.net);
-            quantity += entry.quantity;
-          });
-          // Only write detail rows for POS invoices not already present in the imported
-          // worksheet. Existing POS rows are retained, but their totals come from ledger.
+          const posInvoiceFor = sale => {
+            const raw = String(sale.invoiceNumber || sale.salesInvoiceNumber || sale.invoiceNo || sale.id || `${sale.timestamp || ''}`).trim();
+            return raw.startsWith('POS-') ? raw : `POS-${raw}`;
+          };
+          // POS rows are marked with a POS- invoice prefix. If an exported workbook is
+          // imported again, those rows are recognized and never appended or counted twice.
           const pendingSales = allDateSales.filter(sale => !existingInvoices.has(posInvoiceFor(sale)));
           const lines = netLinesForSales(pendingSales);
           const firstPosExcelRow = Math.max(5, lastExistingExcelRow + 1);
@@ -9574,15 +9444,16 @@
             set(`C${rowNumber}`, entry.quantity);
             const col = categoryCol(entry.category);
             set(`${colIndexToLetter(col)}${rowNumber}`, entry.net);
+            categoryTotalsByCol.set(col, (categoryTotalsByCol.get(col) || 0) + entry.net);
+            quantity += entry.quantity;
           });
           const total = [...categoryTotalsByCol.values()].reduce((sum,value) => sum + value, 0);
           uniqueCategoryCols.forEach(col => set(`${colIndexToLetter(col)}2`, money(categoryTotalsByCol.get(col) || 0)));
           set('B2', money(total)); set('C2', quantity); set('AD2', money(total)); set('AG5', money(total));
-          // AG6 is the count of successful POS transactions for this business date.
-          // Count unique, non-voided POS sale records from the ledger only; never add
-          // invoice rows already present in the imported sheet or a stale worksheet
-          // count, because either may include voided transactions or duplicates.
-          set('AG6', allDateSales.length);
+          const manualInvoiceCount = [...existingInvoices].filter(invoice => !/^POS-/i.test(invoice)).length;
+          const successfulPosInvoices = new Set(allDateSales.map(posInvoiceFor));
+          const existingTransactionCount = manualInvoiceCount + successfulPosInvoices.size;
+          set('AG6', existingTransactionCount);
           // Payment values are allocated on the same discounted, tax-excluded sales basis
           // as the category columns, so the DSR reconciliation remains consistent.
           const paymentAliases = {
@@ -9596,15 +9467,9 @@
             const normalized = norm(label);
             const match = Object.entries(paymentAliases).find(([,aliases]) => aliases.some(alias => normalized === norm(alias)));
             if (!match) return;
-            const methodMatches = sale => match[1].some(alias => norm(sale.paymentMethod) === norm(alias));
-            const previouslyExported = allDateLedgerSales
-              .filter(sale => persistedLedgerInvoices.has(posInvoiceFor(sale)) && methodMatches(sale))
-              .reduce((sum,sale) => sum + reportableSaleTotal(sale), 0);
-            const activeLedgerAmount = allDateSales
-              .filter(methodMatches)
-              .reduce((sum,sale) => sum + reportableSaleTotal(sale), 0);
+            const posAmount = pendingSales.filter(s => match[1].some(alias => norm(s.paymentMethod) === norm(alias))).reduce((sum,s) => sum + reportableSaleTotal(s), 0);
             const existingAmount = numeric(row?.[32]);
-            set(`AG${ri+1}`, money(Math.max(0, existingAmount - previouslyExported) + activeLedgerAmount));
+            set(`AG${ri+1}`, money(existingAmount + posAmount));
           });
           const paymentCell = rowNumber => {
             const ref = `AG${rowNumber}`;
@@ -9866,10 +9731,7 @@
         const today = new Date();
         const todayKey = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
         const todayCategoryTotals = this.getPosCategorySalesSummary(todayKey);
-        const posLedger = this.getDsrCsrPosLedger();
-        const activePosCount = posLedger.filter(sale => !this.isPosSaleVoided(sale)).length;
-        const voidedPosCount = posLedger.filter(sale => this.isPosSaleVoided(sale)).length;
-        const categoryLiveHtml = `<section class="shrink-0 border-b border-slate-800 bg-slate-900/60 px-3 py-2"><div class="mb-2 flex flex-wrap items-center justify-between gap-2"><strong class="text-[11px] text-slate-200">Live POS → DSR / CSR Synchronization · ${today.toLocaleDateString()}</strong><span class="text-[10px] text-emerald-300">${activePosCount} completed · ${voidedPosCount} voided · live ledger</span></div><div class="mb-2 text-[10px] text-slate-400">Successful POS sales, inventory deductions, category mapping, daily details, payment totals, monthly rollups and CSR summary are linked. Voids are removed from report totals and stock is restored.</div><div class="flex flex-wrap gap-2">${todayCategoryTotals.length ? todayCategoryTotals.map(entry=>`<span class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[10px] text-slate-300">${escapeHtml(entry.category)} <strong class="ml-1 font-mono text-emerald-300">${escapeHtml(this.formatMoney(entry.amount))}</strong></span>`).join('') : `<span class="text-[10px] text-slate-500">No completed sales recorded today.</span>`}</div></section>`;
+        const categoryLiveHtml = `<section class="shrink-0 border-b border-slate-800 bg-slate-900/60 px-3 py-2"><div class="mb-2 flex flex-wrap items-center justify-between gap-2"><strong class="text-[11px] text-slate-200">Live POS Category Sales · ${today.toLocaleDateString()}</strong><span class="text-[10px] text-slate-400">Completed, non-voided transactions · discounts allocated · tax excluded</span></div><div class="flex flex-wrap gap-2">${todayCategoryTotals.length ? todayCategoryTotals.map(entry=>`<span class="rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[10px] text-slate-300">${escapeHtml(entry.category)} <strong class="ml-1 font-mono text-emerald-300">${escapeHtml(this.formatMoney(entry.amount))}</strong></span>`).join('') : `<span class="text-[10px] text-slate-500">No completed sales recorded today.</span>`}</div></section>`;
         container.innerHTML = `<div class="uis-sales-layout flex h-full min-h-0 w-full flex-col overflow-hidden bg-slate-950">
           <div class="sr-sales-toolbar flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/80 px-3 py-2"><span class="mr-1 text-[11px] font-semibold text-emerald-300">DSR / CSR LIVE WORKBOOK</span><span class="text-[10px] text-slate-400">POS-linked cells refresh after each completed or voided sale</span>
             <input id="sales-grid-search" type="search" value="${escapeHtml(this.salesGridSearchQuery || '')}" oninput="app.filterSalesSourceGrid(this.value)" placeholder="Search worksheet cells…" class="min-w-[120px] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500" />
@@ -9958,18 +9820,10 @@
           const relTargets = {};
           Array.from(relDoc.getElementsByTagName('Relationship')).forEach(r => relTargets[r.getAttribute('Id')] = r.getAttribute('Target'));
           let sheetNodes = Array.from(wbDoc.getElementsByTagName('sheet'));
-          const dailySheetNameMap = new Map(Object.entries(workbook.dailySheetNameMap || {}));
-          // Persist the auto-updated daily tab name into the actual XLSX package.
-          // The in-memory viewer and exported workbook therefore show the same date.
-          sheetNodes.forEach(node => {
-            const oldName = node.getAttribute('name');
-            const newName = dailySheetNameMap.get(oldName);
-            if (newName) node.setAttribute('name', newName);
-          });
           const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
           const relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-          // Preserve the original worksheet order, styles, dimensions, and cell formatting
-          // while applying the complete daily-sheet date map above.
+          // Worksheet names are source-of-truth identifiers. Preserve all original and
+          // appended month tabs exactly as imported; no date-based renaming is allowed.
           const colNum = ref => { let n=0; for (const ch of String(ref).match(/^[A-Z]+/i)?.[0]?.toUpperCase() || '') n=n*26+ch.charCodeAt(0)-64; return n; };
           const toRef = (rowIndex, colIndex) => { let n=colIndex+1, letters=''; while(n){const r=(n-1)%26;letters=String.fromCharCode(65+r)+letters;n=Math.floor((n-1)/26);} return letters+(rowIndex+1); };
           const writeCell = (doc, cellMap, ref, value) => {
@@ -9989,12 +9843,15 @@
             else {cell.setAttribute('t','inlineStr');const is=doc.createElementNS(ns,'is');const t=doc.createElementNS(ns,'t');t.setAttribute('xml:space','preserve');t.textContent=String(value);is.appendChild(t);cell.appendChild(is);}
           };
           for (const node of sheetNodes) {
+            const sourceName=node.getAttribute('name');
+            const model=workbook.sheets.find(sh=>sh.name===sourceName || sh.sourceName===sourceName);
+            if (model && model.name !== sourceName) node.setAttribute('name', model.name);
             const name=node.getAttribute('name');
             const target=relTargets[node.getAttribute('r:id') || node.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id')];
             if(!target)continue;
             const path=target.replace(/^\//,'').startsWith('xl/')?target.replace(/^\//,''):'xl/'+target.replace(/^\.\//,'');
             const file=zip.file(path); if(!file)continue;
-            const model=workbook.sheets.find(sh=>sh.name===name); if(!model)continue;
+            if(!model)continue;
             const doc=parser.parseFromString(await file.async('string'),'application/xml');
             const cellMap=new Map(Array.from(doc.getElementsByTagNameNS(ns,'c')).map(c=>[c.getAttribute('r'),c]));
             // Remove broken reference formulas/errors from exported report output. These
