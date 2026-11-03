@@ -8593,9 +8593,43 @@
       },
 
       adaptDsrCsrWorkbookToDeviceMonth(workbook = this.salesReportWorkbook) {
-        // The source workbook is authoritative. Never rename, replace, or synthesize
-        // its existing dated tabs based on the device clock.
-        return false;
+        // On import, relabel the daily tab for the device's current day so the
+        // active DSR sheet follows the device clock. Other dated tabs are retained
+        // unchanged as historical records; no tabs are deleted or merged.
+        if (!workbook || !Array.isArray(workbook.sheets)) return false;
+        const now = new Date();
+        const todayKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+        const todayName = `${now.getDate()}-${now.getMonth()+1}-${now.getFullYear()}`;
+        const datedSheets = workbook.sheets.filter(sh => this.getDsrCsrDailySheetDateKey(sh?.name));
+        if (!datedSheets.length) return false;
+        const existingToday = datedSheets.find(sh => this.getDsrCsrDailySheetDateKey(sh.name) === todayKey);
+        if (existingToday) {
+          workbook.deviceDateSheetName = existingToday.name;
+          return false;
+        }
+        // Prefer the source tab for the same day number (e.g. 03-10-2026 -> 3-11-2026).
+        // If the source month has fewer days, use the last available dated tab.
+        const dayOfMonth = now.getDate();
+        const source = datedSheets.find(sh => {
+          const key = this.getDsrCsrDailySheetDateKey(sh.name);
+          return Number(key.slice(8,10)) === dayOfMonth;
+        }) || datedSheets.slice().sort((a,b) => this.getDsrCsrDailySheetDateKey(b.name).localeCompare(this.getDsrCsrDailySheetDateKey(a.name)))[0];
+        if (!source) return false;
+        const oldName = source.name;
+        // Avoid duplicate worksheet names if an imported file already has a tab
+        // with today's date in a different accepted spelling.
+        const collision = workbook.sheets.find(sh => sh !== source && String(sh.name).toLowerCase() === todayName.toLowerCase());
+        if (collision) {
+          workbook.deviceDateSheetName = collision.name;
+          return false;
+        }
+        if (!workbook.dailySheetNameMap || typeof workbook.dailySheetNameMap !== 'object') workbook.dailySheetNameMap = {};
+        workbook.dailySheetNameMap[oldName] = todayName;
+        source.originalDailySheetName = source.originalDailySheetName || oldName;
+        source.name = todayName;
+        workbook.deviceDateSheetName = todayName;
+        workbook.deviceDateApplied = todayKey;
+        return true;
       },
 
       async handleSalesReportFileSelect(input) {
@@ -8617,15 +8651,16 @@
           sheets.splice(0, sheets.length, ...adaptedSheets);
           if (previousFileName !== file.name) { this.salesGridScrollTop=0; this.salesGridScrollLeft=0; this.salesGridStartIndex=-1; this.salesGridSearchQuery=''; this.salesGridEditedOnly=false; }
           const firstVisibleSheet = sheets.find(sh => sh.state !== 'hidden' && sh.state !== 'veryHidden') || sheets[0];
-          // Automatically adopt the device's local date when opening a recognized DSR/CSR workbook.
-          // Keep historical tabs intact; choose today's existing daily tab rather than hardcoding a month.
+          // The imported daily tab has already been relabelled to the device date above.
+          // Keep the other dated tabs intact as historical records.
           const localToday = new Date();
           const todayKey = `${localToday.getFullYear()}-${String(localToday.getMonth()+1).padStart(2,'0')}-${String(localToday.getDate()).padStart(2,'0')}`;
           const todayDailySheet = sheets.find(sh => this.getDsrCsrDailySheetDateKey(sh.name) === todayKey && sh.state !== 'hidden' && sh.state !== 'veryHidden');
+          const deviceDateSheet = sheets.find(sh => sh.name === this.salesReportWorkbook.deviceDateSheetName && sh.state !== 'hidden' && sh.state !== 'veryHidden');
           const preferredMonthSummary = sheets.find(sh => /^CSR SUMMARY(?:\s*[-–]\s*[A-Z]+\s+\d{4})?$/i.test(sh.name) && sh.state !== 'hidden' && sh.state !== 'veryHidden');
           this.salesReportSheetName = previousFileName === file.name && sheets.some(sh => sh.name === previousSheetName && sh.state !== 'hidden' && sh.state !== 'veryHidden')
-            ? (todayDailySheet?.name || previousSheetName)
-            : (todayDailySheet?.name || preferredMonthSummary?.name || firstVisibleSheet.name);
+            ? (todayDailySheet?.name || deviceDateSheet?.name || previousSheetName)
+            : (todayDailySheet?.name || deviceDateSheet?.name || preferredMonthSummary?.name || firstVisibleSheet.name);
           const selectedSheet = sheets.find(sh => sh.name === this.salesReportSheetName) || firstVisibleSheet;
           this.gridZoom = Math.max(0.5, Math.min(2, (Number(selectedSheet.zoomScale) || 100) / 100));
           const isFixedDsrTemplate = this.isDsrCsr2026Template(this.salesReportWorkbook);
@@ -8639,7 +8674,7 @@
           this.salesReportImportAllDated = previousFileName === file.name ? previousImportAllDated : false;
           await this.saveSalesReportStore();
           this.renderMainView();
-          this.showToast(isFixedDsrTemplate ? `Loaded ${sheets.length} worksheets. The 2026 DSR/CSR template was recognized and mapped automatically.` : `Loaded ${sheets.length} sales worksheet(s). Review the automatic column suggestions.`, 'success');
+          this.showToast(isFixedDsrTemplate ? `Loaded ${sheets.length} worksheets. The active daily DSR sheet is dated ${this.salesReportWorkbook.deviceDateApplied || todayKey} using your device date; other dated tabs were preserved.` : `Loaded ${sheets.length} sales worksheet(s). Review the automatic column suggestions.`, 'success');
         } catch (error) {
           this.showToast(error?.message || 'Could not read the sales file.', 'error');
         }
@@ -9784,6 +9819,14 @@
           const relTargets = {};
           Array.from(relDoc.getElementsByTagName('Relationship')).forEach(r => relTargets[r.getAttribute('Id')] = r.getAttribute('Target'));
           let sheetNodes = Array.from(wbDoc.getElementsByTagName('sheet'));
+          const dailySheetNameMap = new Map(Object.entries(workbook.dailySheetNameMap || {}));
+          // Persist the auto-updated daily tab name into the actual XLSX package.
+          // The in-memory viewer and exported workbook therefore show the same date.
+          sheetNodes.forEach(node => {
+            const oldName = node.getAttribute('name');
+            const newName = dailySheetNameMap.get(oldName);
+            if (newName) node.setAttribute('name', newName);
+          });
           const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
           const relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
           // Worksheet names are source-of-truth identifiers. Preserve all original and
