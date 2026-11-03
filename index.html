@@ -4588,8 +4588,12 @@
           this.posCustomerNote = '';
           this.posDiscountValue = '';
           this.rebuildIndex();
-          this.syncPosLedgerToDsrCsr();
-          this.showToast(`Sale ${saleId} completed and synchronized to DSR/CSR. Total ${this.formatMoney(total)}.`, 'success');
+          const reportSync = this.syncPosLedgerToDsrCsr();
+          if (this.salesReportWorkbook && this.isDsrCsr2026Template(this.salesReportWorkbook)) {
+            this.showToast(`Sale ${saleId} completed. DSR/CSR updated: ${reportSync.synchronizedCells} mapped cells across ${reportSync.synchronizedSheets} sheets. Total ${this.formatMoney(total)}.`, 'success');
+          } else {
+            this.showToast(`Sale ${saleId} completed. Import the DSR/CSR workbook to synchronize this transaction into the report cells. Total ${this.formatMoney(total)}.`, 'success');
+          }
         } catch (error) {
           this.showToast(error?.message || 'The sale could not be completed.', 'error');
         }
@@ -4622,8 +4626,12 @@
           sale.voidedAt = now;
           sale.voidedBy = this.getCurrentActor();
           this.rebuildIndex();
-          this.syncPosLedgerToDsrCsr();
-          this.showToast(`Sale ${sale.id} voided, stock restored, and DSR/CSR totals synchronized.`, 'success');
+          const reportSync = this.syncPosLedgerToDsrCsr();
+          if (this.salesReportWorkbook && this.isDsrCsr2026Template(this.salesReportWorkbook)) {
+            this.showToast(`Sale ${sale.id} voided, stock restored, and ${reportSync.synchronizedCells} DSR/CSR cells recalculated.`, 'success');
+          } else {
+            this.showToast(`Sale ${sale.id} voided and stock restored. Import the DSR/CSR workbook to update report cells.`, 'success');
+          }
         } catch (err) {
           this.showToast(err?.message || 'Could not void sale.', 'error');
         }
@@ -9343,13 +9351,67 @@
         const books = this.getWorkspaceWorkbooks?.() || [];
         books.forEach(wb => { if (wb) { wb._uisSession = wb._uisSession || {}; wb._uisSession.sales = this.sales; } });
         this.scheduleWorkspaceSave();
-        if (this.salesReportWorkbook) {
-          this.salesReportWorkbook.posSyncUpdatedAt = Date.now();
-          this.salesReportWorkbook.posSyncLedgerCount = this.getDsrCsrPosLedger().length;
-          this.saveSalesReportStore().catch(error => console.warn('POS-to-DSR/CSR sync persistence failed:', error));
+
+        const workbook = this.salesReportWorkbook;
+        let synchronizedSheets = 0;
+        let synchronizedCells = 0;
+        if (workbook && this.isDsrCsr2026Template(workbook)) {
+          // Rebuild every dated daily sheet and both monthly rollups immediately after
+          // each checkout/void. Materialize non-formula cells into the workbook model
+          // so the imported workbook itself changes, not just a decorative overlay.
+          // Formula cells remain intact; the live grid still displays their POS-derived
+          // override and Excel recalculates the original formula on open.
+          const reportSheets = (workbook.sheets || []).filter(sheet => {
+            const name = String(sheet?.name || '');
+            return !!this.getDsrCsrDailySheetDateKey(name) ||
+              /^(?:NEW CAT SALES|CSR SUMMARY)(?:\s*[-–]\s*[A-Z]+\s+\d{4})?$/i.test(name);
+          });
+          const columnIndex = letters => {
+            let value = 0;
+            for (const char of String(letters || '')) value = value * 26 + char.charCodeAt(0) - 64;
+            return value - 1;
+          };
+          reportSheets.forEach(sheet => {
+            const overrides = this.getDsrCsrLiveCellOverrides(sheet.name);
+            if (!overrides.size) return;
+            overrides.forEach((value, cellRef) => {
+              const match = /^([A-Z]+)(\d+)$/i.exec(cellRef);
+              if (!match) return;
+              const rowIndex = Number(match[2]) - 1;
+              const colIndex = columnIndex(match[1].toUpperCase());
+              if (rowIndex < 0 || colIndex < 0) return;
+              const formula = sheet.formulas?.[rowIndex]?.[colIndex];
+              if (formula) return;
+              sheet.rows = Array.isArray(sheet.rows) ? sheet.rows : [];
+              while (sheet.rows.length <= rowIndex) sheet.rows.push([]);
+              const row = sheet.rows[rowIndex] || (sheet.rows[rowIndex] = []);
+              while (row.length <= colIndex) row.push('');
+              const normalizedValue = value === null || value === undefined ? '' : value;
+              if (row[colIndex] !== normalizedValue) {
+                row[colIndex] = normalizedValue;
+                if (sheet.cellTypes) {
+                  sheet.cellTypes[rowIndex] = sheet.cellTypes[rowIndex] || [];
+                  sheet.cellTypes[rowIndex][colIndex] = typeof normalizedValue === 'number' ? 'n' : 's';
+                }
+                synchronizedCells++;
+              }
+            });
+            synchronizedSheets++;
+          });
+          workbook.posSyncUpdatedAt = Date.now();
+          workbook.posSyncLedgerCount = this.getDsrCsrPosLedger().length;
+          workbook.posSyncSuccessfulTransactionCount = this.getDsrCsrPosLedger().filter(sale => !this.isPosSaleVoided(sale)).length;
+          workbook.posSyncSheetsUpdated = synchronizedSheets;
+          workbook.posSyncCellsUpdated = synchronizedCells;
+          // Persist the changed workbook model immediately. This includes mapped line
+          // details, category totals, transaction counts, payment values and rollups.
+          this.saveSalesReportStore().catch(error => {
+            console.error('POS-to-DSR/CSR sync persistence failed:', error);
+            this.showToast('POS sale completed, but the DSR/CSR workbook could not be saved. Export a backup and check browser storage.', 'error');
+          });
         }
         if (render) this.renderAll();
-        return true;
+        return { synchronizedSheets, synchronizedCells };
       },
       getDsrCsrSalesForDate(dateKey) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) return [];
@@ -9473,6 +9535,10 @@
               if (this.isPosSaleVoided(ledgerSale)) {
                 const desc = String(row[1] ?? 'POS transaction');
                 if (!/^VOIDED\s*[·-]/i.test(desc)) set(`B${ri+1}`, `VOIDED · ${desc}`);
+                // Keep the invoice audit trail, but remove its reportable quantity
+                // and category amount from the visible transaction detail row.
+                set(`C${ri+1}`, 0);
+                uniqueCategoryCols.forEach(col => set(`${colIndexToLetter(col)}${ri+1}`, 0));
               }
               continue;
             }
