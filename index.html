@@ -457,6 +457,9 @@
     #workbook-file-tabs .workbook-tab { flex:0 0 auto; max-width:min(72vw,260px); display:inline-flex; align-items:center; gap:8px; border:1px solid var(--uis-line); border-radius:999px; padding:8px 13px; color:var(--uis-muted); background:var(--uis-surface); font-size:11px; font-weight:650; }
     #workbook-file-tabs .workbook-tab.active { color:var(--uis-accent-contrast) !important; background:var(--uis-accent) !important; border-color:var(--uis-accent) !important; }
     #workbook-file-tabs .workbook-tab .tab-name { overflow:hidden; text-overflow:ellipsis; }
+    #workbook-file-tabs .workbook-tab-select { display:inline-flex; align-items:center; gap:8px; min-width:0; flex:1 1 auto; overflow:hidden; color:inherit; background:transparent; border:0; padding:0; font:inherit; text-align:left; cursor:pointer; }
+    #workbook-file-tabs .workbook-tab-close { display:inline-flex; align-items:center; justify-content:center; flex:0 0 16px; width:16px; height:16px; margin-left:2px; border:0; border-radius:50%; color:inherit; background:transparent; opacity:.72; cursor:pointer; font-size:14px; line-height:1; }
+    #workbook-file-tabs .workbook-tab-close:hover { opacity:1; background:rgba(127,127,127,.22); }
     /* Compact workbook tab rail: approximately 50% of its previous height. */
     #workbook-file-tabs .workbook-tab-strip { height:25px; min-height:25px; padding:2px 9px; gap:5px; }
     #workbook-file-tabs .workbook-tab,
@@ -2526,6 +2529,30 @@
         const workZip = await window.JSZip.loadAsync(workbookState.workingBuffer);
         const parser = new DOMParser();
         const serializer = new XMLSerializer();
+        const normalizePackagePath = value => {
+          const parts = [];
+          String(value || '').replace(/^\/+/, '').split('/').forEach(part => {
+            if (!part || part === '.') return;
+            if (part === '..') parts.pop(); else parts.push(part);
+          });
+          return parts.join('/');
+        };
+        const resolveWorksheetPartPath = async (zip, sheetName) => {
+          const wbPart = zip.file('xl/workbook.xml');
+          const relPart = zip.file('xl/_rels/workbook.xml.rels');
+          if (!wbPart || !relPart) return null;
+          const wbDoc = parser.parseFromString(await wbPart.async('string'), 'application/xml');
+          const relDoc = parser.parseFromString(await relPart.async('string'), 'application/xml');
+          const node = Array.from(wbDoc.getElementsByTagName('sheet')).find(item =>
+            String(item.getAttribute('name') || '').trim().toUpperCase() === String(sheetName || '').trim().toUpperCase()
+          );
+          if (!node) return null;
+          const rid = node.getAttribute('r:id') || node.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+          const rel = Array.from(relDoc.getElementsByTagName('Relationship')).find(item => item.getAttribute('Id') === rid);
+          const target = rel?.getAttribute('Target');
+          if (!target) return null;
+          return normalizePackagePath(target.startsWith('/') || target.startsWith('xl/') ? target : `xl/${target}`);
+        };
 
         let totalCellsModified = 0;
         const modifiedCellDetails = [];
@@ -2662,6 +2689,135 @@
           workZip.file(sheet.targetPath, serializer.serializeToString(doc));
         }
 
+        // Materialize app-created worksheets (such as UNKNOWNS) into the XLSX package.
+        // They exist in the in-memory grid but have no source XML part to update.
+        const syntheticSheets = [];
+        for (const sheet of workbookState.worksheets) {
+          const sourcePath = await resolveWorksheetPartPath(origZip, sheet.sheetName);
+          const hasSourcePart = !!(sourcePath && origZip.file(sourcePath));
+          if (sheet.isSyntheticWorksheet || !hasSourcePart) syntheticSheets.push(sheet);
+        }
+        if (syntheticSheets.length) {
+          const wbFile = workZip.file('xl/workbook.xml');
+          const relFile = workZip.file('xl/_rels/workbook.xml.rels');
+          const ctFile = workZip.file('[Content_Types].xml');
+          if (!wbFile || !relFile || !ctFile) throw new Error('Workbook package is missing required metadata parts for new worksheets.');
+          const wbDoc = parser.parseFromString(await wbFile.async('string'), 'application/xml');
+          const relDoc = parser.parseFromString(await relFile.async('string'), 'application/xml');
+          const ctDoc = parser.parseFromString(await ctFile.async('string'), 'application/xml');
+          const wbNs = wbDoc.documentElement.namespaceURI || 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+          const relNs = relDoc.documentElement.namespaceURI || 'http://schemas.openxmlformats.org/package/2006/relationships';
+          const ctNs = ctDoc.documentElement.namespaceURI || 'http://schemas.openxmlformats.org/package/2006/content-types';
+          const sheetsEl = wbDoc.getElementsByTagName('sheets')[0];
+          const currentSheetNodes = Array.from(wbDoc.getElementsByTagName('sheet'));
+          const currentRelNodes = Array.from(relDoc.getElementsByTagName('Relationship'));
+          const usedSheetIds = currentSheetNodes.map(n => Number(n.getAttribute('sheetId')) || 0);
+          const usedRelNums = currentRelNodes.map(r => Number((r.getAttribute('Id') || '').replace(/^rId/, '')) || 0);
+          const usedFileNums = Object.keys(workZip.files).map(n => n.match(/^xl\/worksheets\/sheet(\d+)\.xml$/)).filter(Boolean).map(m => Number(m[1]));
+          let nextSheetId = Math.max(0, ...usedSheetIds) + 1;
+          let nextRelNum = Math.max(0, ...usedRelNums) + 1;
+          let nextFileNum = Math.max(0, ...usedFileNums) + 1;
+          for (const sheet of syntheticSheets) {
+            // A workbook may already list UNKNOWNS in workbook.xml while its
+            // worksheet part is absent. Reuse that sheet entry/relationship and
+            // create the missing XML instead of silently skipping it.
+            let sheetNode = currentSheetNodes.find(n => String(n.getAttribute('name') || '').trim().toUpperCase() === String(sheet.sheetName || '').trim().toUpperCase());
+            let path = '';
+            if (sheetNode) {
+              const rid = sheetNode.getAttribute('r:id') || sheetNode.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+              const existingRel = currentRelNodes.find(r => r.getAttribute('Id') === rid);
+              const target = existingRel?.getAttribute('Target') || '';
+              path = target ? normalizePackagePath(target.startsWith('/') || target.startsWith('xl/') ? target : `xl/${target}`) : '';
+            }
+            path = path || normalizePackagePath(sheet.targetPath) || `xl/worksheets/sheet${nextFileNum++}.xml`;
+            // If the relationship points at an occupied unrelated worksheet, allocate a fresh part.
+            if (workZip.file(path) && !origZip.file(path) && !String(sheet.targetPath || '').includes(path)) {
+              path = `xl/worksheets/sheet${nextFileNum++}.xml`;
+            }
+            sheet.targetPath = path;
+            const fileMatch = path.match(/sheet(\d+)\.xml$/);
+            if (fileMatch) nextFileNum = Math.max(nextFileNum, Number(fileMatch[1]) + 1);
+            if (!sheetNode) {
+              const relId = `rId${nextRelNum++}`;
+              sheetNode = wbDoc.createElementNS(wbNs, 'sheet');
+              sheetNode.setAttribute('name', sheet.sheetName);
+              sheetNode.setAttribute('sheetId', String(nextSheetId++));
+              sheetNode.setAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'r:id', relId);
+              sheetsEl.appendChild(sheetNode);
+              const relNode = relDoc.createElementNS(relNs, 'Relationship');
+              relNode.setAttribute('Id', relId);
+              relNode.setAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
+              relNode.setAttribute('Target', path.replace(/^xl\//, ''));
+              relDoc.documentElement.appendChild(relNode);
+              currentRelNodes.push(relNode);
+              currentSheetNodes.push(sheetNode);
+            } else {
+              const rid = sheetNode.getAttribute('r:id') || sheetNode.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+              if (!currentRelNodes.some(r => r.getAttribute('Id') === rid)) {
+                const relId = rid || `rId${nextRelNum++}`;
+                sheetNode.setAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'r:id', relId);
+                const relNode = relDoc.createElementNS(relNs, 'Relationship');
+                relNode.setAttribute('Id', relId);
+                relNode.setAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
+                relNode.setAttribute('Target', path.replace(/^xl\//, ''));
+                relDoc.documentElement.appendChild(relNode);
+                currentRelNodes.push(relNode);
+              }
+            }
+            if (!Array.from(ctDoc.getElementsByTagName('Override')).some(n => n.getAttribute('PartName') === `/${path}`)) {
+              const override = ctDoc.createElementNS(ctNs, 'Override');
+              override.setAttribute('PartName', `/${path}`);
+              override.setAttribute('ContentType', 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+              ctDoc.documentElement.appendChild(override);
+            }
+
+            const wsNs = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+            const wsDoc = parser.parseFromString(`<worksheet xmlns="${wsNs}"><sheetData/></worksheet>`, 'application/xml');
+            if (String(sheet.sheetName || '').trim().toUpperCase() === 'UNKNOWNS') {
+              const colsEl = wsDoc.createElementNS(wsNs, 'cols');
+              (sheet.headers || []).forEach(header => {
+                const values = [String(header.name ?? '')];
+                (sheet.records || []).forEach(record => values.push(String(record.cells?.[header.colIndex]?.value ?? '')));
+                const longest = values.reduce((max, value) => Math.max(max, value.length), 0);
+                const colEl = wsDoc.createElementNS(wsNs, 'col');
+                colEl.setAttribute('min', String(header.colIndex));
+                colEl.setAttribute('max', String(header.colIndex));
+                colEl.setAttribute('width', String(Math.max(12, Math.ceil(longest * 1.15 + 3))));
+                colEl.setAttribute('customWidth', '1');
+                colsEl.appendChild(colEl);
+              });
+              wsDoc.documentElement.insertBefore(colsEl, wsDoc.getElementsByTagName('sheetData')[0]);
+            }
+            const dataEl = wsDoc.getElementsByTagName('sheetData')[0];
+            for (const rec of [...(sheet.records || [])].sort((a,b) => a.rowNumber - b.rowNumber)) {
+              const rowEl = wsDoc.createElementNS(wsNs, 'row');
+              rowEl.setAttribute('r', String(rec.rowNumber));
+              for (const header of sheet.headers || []) {
+                const cellData = rec.cells?.[header.colIndex];
+                const value = cellData?.value ?? '';
+                if (String(value).trim() === '') continue;
+                const cell = wsDoc.createElementNS(wsNs, 'c');
+                cell.setAttribute('r', `${header.colLetter}${rec.rowNumber}`);
+                if (cellData?.type === 'n' && Number.isFinite(Number(value))) {
+                  const v = wsDoc.createElementNS(wsNs, 'v'); v.textContent = String(Number(value)); cell.appendChild(v);
+                } else {
+                  cell.setAttribute('t', 'inlineStr');
+                  const inline = wsDoc.createElementNS(wsNs, 'is');
+                  const t = wsDoc.createElementNS(wsNs, 't'); t.textContent = String(value);
+                  inline.appendChild(t); cell.appendChild(inline);
+                }
+                rowEl.appendChild(cell);
+              }
+              dataEl.appendChild(rowEl);
+            }
+            workZip.file(path, serializer.serializeToString(wsDoc));
+            currentSheetNodes.push(sheetNode);
+          }
+          workZip.file('xl/workbook.xml', serializer.serializeToString(wbDoc));
+          workZip.file('xl/_rels/workbook.xml.rels', serializer.serializeToString(relDoc));
+          workZip.file('[Content_Types].xml', serializer.serializeToString(ctDoc));
+        }
+
         const historyRows = Array.isArray(workbookState.inventoryHistory) ? workbookState.inventoryHistory : [];
         {
           const wbFile = workZip.file('xl/workbook.xml');
@@ -2762,7 +2918,8 @@
         const expSheetNames = Array.from(expWbDoc.getElementsByTagName('sheet')).map(s => s.getAttribute('name'));
 
         const originalHasHistory = origSheetNames.some(n => String(n).trim().toLowerCase() === 'inventory history');
-        const expectedSheetNames = originalHasHistory ? origSheetNames : [...origSheetNames, 'Inventory History'];
+        const syntheticNames = workbookState.worksheets.filter(sheet => sheet.isSyntheticWorksheet && !origSheetNames.some(n => String(n).trim().toUpperCase() === String(sheet.sheetName).trim().toUpperCase())).map(sheet => sheet.sheetName);
+        const expectedSheetNames = [...origSheetNames, ...syntheticNames, ...(originalHasHistory ? [] : ['Inventory History'])];
         const sheetOrderPreserved = JSON.stringify(expectedSheetNames) === JSON.stringify(expSheetNames) &&
           expSheetNames.filter(n => String(n).trim().toLowerCase() === 'inventory history').length === 1;
 
@@ -2777,9 +2934,21 @@
         const layoutParts = ['sheetViews', 'pageMargins', 'pageSetup', 'sheetFormatPr'];
 
         for (const sheet of workbookState.worksheets) {
-          const originalPart = origZip.file(sheet.targetPath);
-          const exportedPart = verifyZip.file(sheet.targetPath);
-          if (!originalPart || !exportedPart) throw new Error(`Export is missing worksheet XML for ${sheet.sheetName}.`);
+          const originalPath = await resolveWorksheetPartPath(origZip, sheet.sheetName) || sheet.targetPath;
+          const exportedPath = await resolveWorksheetPartPath(verifyZip, sheet.sheetName) || sheet.targetPath;
+          const originalPart = originalPath ? origZip.file(originalPath) : null;
+          const exportedPart = exportedPath ? verifyZip.file(exportedPath) : null;
+          if (!exportedPart) throw new Error(`Export is missing worksheet XML for ${sheet.sheetName} (expected ${exportedPath || sheet.targetPath || 'a registered worksheet part'}).`);
+          if (!originalPart || sheet.isSyntheticWorksheet) {
+            // App-generated worksheets need not have a source XML part. Verify
+            // their exported part through the workbook relationship instead.
+            const syntheticXml = await exportedPart.async('string');
+            const syntheticDoc = parser.parseFromString(syntheticXml, 'application/xml');
+            if (syntheticDoc.getElementsByTagName('parsererror').length || !syntheticDoc.getElementsByTagName('sheetData').length) {
+              throw new Error(`Malformed generated worksheet XML detected during export verification: ${sheet.sheetName}.`);
+            }
+            continue;
+          }
           const oXml = await originalPart.async('string');
           const eXml = await exportedPart.async('string');
           const oDoc = parser.parseFromString(oXml, 'application/xml');
@@ -5670,6 +5839,33 @@
         }
       },
 
+      ensureUnknownsWorksheet(workbook) {
+        if (!workbook || !Array.isArray(workbook.worksheets)) return null;
+        let sheet = workbook.worksheets.find(ws => String(ws?.sheetName || '').trim().toUpperCase() === 'UNKNOWNS');
+        if (sheet) {
+          if (!sheet.targetPath) {
+            const used = workbook.worksheets.map(ws => String(ws?.targetPath || '').match(/^xl\/worksheets\/sheet(\d+)\.xml$/)).filter(Boolean).map(m => Number(m[1]));
+            sheet.targetPath = `xl/worksheets/sheet${Math.max(0, ...used) + 1}.xml`;
+            sheet.isSyntheticWorksheet = true;
+          }
+          return sheet;
+        }
+        const names = ['Barcode', 'Description', 'Price', 'Quantity'];
+        const headers = names.map((name, i) => ({ colIndex: i + 1, colLetter: colIndexToLetter(i + 1), name, isFflz: false, isFullUpc: i === 0 }));
+        const cells = {};
+        headers.forEach(h => { cells[h.colIndex] = { ref: `${h.colLetter}1`, value: h.name, formula: null, styleId: '2', type: 'inlineStr' }; });
+        const usedSheetFiles = workbook.worksheets.map(ws => String(ws?.targetPath || '').match(/^xl\/worksheets\/sheet(\d+)\.xml$/)).filter(Boolean).map(m => Number(m[1]));
+        sheet = {
+          sheetName: 'UNKNOWNS', targetPath: `xl/worksheets/sheet${Math.max(0, ...usedSheetFiles) + 1}.xml`,
+          isSyntheticWorksheet: true, headers,
+          records: [{ rowNumber: 1, cells, originalFflzValue: '', currentFflzValue: '', originalFullUpcValue: '', currentFullUpcValue: '', isModified: false, isFullUpcModified: false, isNewRow: false, validationError: null }],
+          maxRow: 1, maxCol: 4, headerRowNumber: 1, fflzColIndex: null, fullUpcColIndex: 1,
+          fflzStatus: 'NOT_CONFIGURED', inventoryHistory: []
+        };
+        workbook.worksheets.push(sheet);
+        return sheet;
+      },
+
       async handleSingleWorkbookUpload(file) {
         if (!file) return;
         if (!file.name.toLowerCase().endsWith('.xlsx') && !file.name.toLowerCase().endsWith('.xlsm')) {
@@ -5700,6 +5896,7 @@
           }
 
           inspected = await OpenXmlSurgicalEngine.inspectAndPrepareWorkbook(buffer, file.name, this.headerRowOverrides, inventoryConfig);
+          this.ensureUnknownsWorksheet(inspected);
           const importValidation = this.validateInspectedWorkbook(inspected);
           if (!Array.isArray(this.openWorkbooks)) this.openWorkbooks = [];
           this.captureActiveWorkbookSession();
@@ -5761,7 +5958,16 @@
         this.notFoundPrompt = null;
         const match = findByBarcode(cleanFull, this.inventoryCodeIndex || this.codeIndex);
 
-        if (!match || !match.products || match.products.length === 0) {
+        const matchedProducts = Array.isArray(match?.products) ? match.products : [];
+        const hasExactBarcodeMatch = matchedProducts.some(product => {
+          const stored = normalizeCodeString(product.storedCode || product.currentFullUpcValue || product.normalizedCode || '');
+          return stored && stored === cleanFull;
+        });
+        const matchedDigits = Number(match?.len || matchedProducts[0]?.matchedDigitsCount || 0);
+        const shouldOfferUnknown = matchedProducts.length === 0 || !hasExactBarcodeMatch || matchedDigits < 5;
+
+        if (matchedProducts.length === 0) {
+          const reason = 'No barcode match was found.';
           this.scannerStatus = 'NOT_FOUND';
           playScanSound('error');
           this.lastScanResult = {
@@ -5769,12 +5975,23 @@
             scannedFull: cleanFull,
             suffix: cleanFull.slice(-5),
             len: 0,
-            notFound: true
+            notFound: true,
+            partialMatch: false,
+            reason
           };
-          this.notFoundPrompt = { scannedFull: cleanFull };
+          this.notFoundPrompt = { scannedFull: cleanFull, reason, matchedDigits: 0 };
           this.renderScannerBar();
-          this.showToast(`Not in inventory: ${cleanFull}`, 'error');
+          this.showToast(`${reason} Add the scanned barcode to UNKNOWNS if it is a new item.`, 'error');
           return;
+        }
+
+        // Keep partial matches visible in the normal match/disambiguation UI,
+        // while separately offering to save the scanned barcode to UNKNOWNS.
+        if (shouldOfferUnknown) {
+          const reason = !hasExactBarcodeMatch
+            ? `A partial barcode match was found (${matchedDigits} consecutive trailing digits).`
+            : `The barcode match contains only ${matchedDigits} consecutive trailing digits.`;
+          this.notFoundPrompt = { scannedFull: cleanFull, reason, matchedDigits };
         }
 
         if (match.products.length > 1) {
@@ -6045,7 +6262,7 @@
       },
 
       openNewRowModal(scannedFull) {
-        const activeSheet = this.workbook?.worksheets?.[this.activeSheetIdx];
+        const activeSheet = this.ensureUnknownsWorksheet(this.workbook);
         if (!activeSheet) return;
         const modal = document.getElementById('new-row-modal');
         if (!modal) return;
@@ -6056,7 +6273,7 @@
             <div class="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 class="text-base font-bold text-white flex items-center gap-2">
                 <i data-lucide="plus-circle" class="w-5 h-5 text-emerald-400"></i>
-                Add Unindexed Barcode to "${escapeHtml(activeSheet.sheetName)}"
+                Add Item to "UNKNOWNS"
               </h3>
               <button onclick="app.closeNewRowModal()" class="text-slate-400 hover:text-white cursor-pointer">
                 <i data-lucide="x" class="w-4 h-4"></i>
@@ -6068,11 +6285,10 @@
                 <input id="newrow-upc" type="text" readonly value="${escapeHtml(scannedFull)}" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-emerald-400" />
               </div>
               <div>
-                <label class="block text-slate-400 mb-1">SKU / Item Code</label>
-                <input id="newrow-sku" type="text" value="${escapeHtml(defaultSku)}" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white" />
+
               </div>
               <div>
-                <label class="block text-slate-400 mb-1">Product Name / Description</label>
+                <label class="block text-slate-400 mb-1">Description</label>
                 <input id="newrow-name" type="text" placeholder="Enter product name" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white" />
               </div>
               <div class="grid grid-cols-2 gap-3">
@@ -6081,7 +6297,7 @@
                   <input id="newrow-price" type="number" min="0" step="0.01" value="0.00" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 font-mono text-white" />
                 </div>
                 <div>
-                  <label class="block text-slate-400 mb-1">Initial Stock Qty</label>
+                  <label class="block text-slate-400 mb-1">Quantity</label>
                   <input id="newrow-qty" type="number" min="0" step="1" value="1" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-emerald-500/50 font-mono font-bold text-emerald-300" />
                 </div>
               </div>
@@ -6102,106 +6318,39 @@
       },
 
       confirmAddNewRow() {
-        const activeSheet = this.workbook?.worksheets?.[this.activeSheetIdx];
-        if (!activeSheet) return;
-        this.pushUndoState('New inventory item');
-
-        const scannedFull = document.getElementById('newrow-upc')?.value || '';
-        const sku = document.getElementById('newrow-sku')?.value || `SKU-${scannedFull.slice(-5)}`;
-        const itemName = (document.getElementById('newrow-name')?.value || '').trim() || `Item ${scannedFull}`;
-        const price = document.getElementById('newrow-price')?.value || '0.00';
-        const qty = document.getElementById('newrow-qty')?.value || '1';
-
-        const nextRowNumber = (activeSheet.maxRow || activeSheet.records.length + 2) + 1;
-        const targetFflzCol = activeSheet.duplicateResolvedColIndex || activeSheet.fflzColIndex;
-        const targetFullUpcCol = activeSheet.fullUpcColIndex;
-        const { nameHeader, headersToIndex, priceHeader } = resolveSheetColumns(activeSheet);
-
+        const targetSheet = this.ensureUnknownsWorksheet(this.workbook);
+        if (!targetSheet) return;
+        const scannedFull = String(document.getElementById('newrow-upc')?.value || '').trim();
+        const description = String(document.getElementById('newrow-name')?.value || '').trim();
+        const priceRaw = String(document.getElementById('newrow-price')?.value ?? '').trim();
+        const qtyRaw = String(document.getElementById('newrow-qty')?.value ?? '').trim();
+        const price = Number(priceRaw), qty = Number(qtyRaw);
+        if (!scannedFull || !description || priceRaw === '' || !Number.isFinite(price) || price < 0 || qtyRaw === '' || !Number.isInteger(qty) || qty < 0) {
+          this.showToast('Enter a barcode, description, valid price, and whole-number quantity (0 or greater).', 'error');
+          return;
+        }
+        this.pushUndoState('Add item to UNKNOWNS');
+        const nextRowNumber = Math.max(1, Number(targetSheet.maxRow || 1)) + 1;
+        const values = [scannedFull, description, String(price), String(qty)];
         const cells = {};
-        activeSheet.headers.forEach(h => {
-          cells[h.colIndex] = {
-            ref: `${h.colLetter}${nextRowNumber}`,
-            value: '',
-            formula: null,
-            styleId: '2',
-            type: 'inlineStr'
-          };
+        targetSheet.headers.forEach((h, i) => {
+          const value = values[i] ?? '';
+          cells[h.colIndex] = { ref: `${h.colLetter}${nextRowNumber}`, value, formula: null, styleId: '2', type: i >= 2 ? 'n' : 'inlineStr' };
         });
-
-        // Map fields dynamically to the detected columns of this worksheet
-        const codeCol = headersToIndex[0]?.colIndex || 1;
-        const nameCol = nameHeader?.colIndex || (codeCol === 1 ? 2 : 1);
-        const priceCol = priceHeader?.colIndex || null;
-
-        if (cells[codeCol]) cells[codeCol].value = scannedFull;
-        if (cells[nameCol]) cells[nameCol].value = itemName;
-        if (priceCol && cells[priceCol]) {
-          cells[priceCol].value = String(price);
-          cells[priceCol].type = 'n';
-        }
-        if (cells[1] && !cells[1].value) cells[1].value = sku;
-
-        if (targetFflzCol) {
-          cells[targetFflzCol] = {
-            ref: `${colIndexToLetter(targetFflzCol)}${nextRowNumber}`,
-            value: String(qty),
-            formula: null,
-            styleId: '2',
-            type: 'n'
-          };
-        }
-        if (targetFullUpcCol) {
-          cells[targetFullUpcCol] = {
-            ref: `${colIndexToLetter(targetFullUpcCol)}${nextRowNumber}`,
-            value: scannedFull,
-            formula: null,
-            styleId: '2',
-            type: 'inlineStr'
-          };
-        }
-
-        activeSheet.maxRow = nextRowNumber;
-        activeSheet.records.push({
-          rowNumber: nextRowNumber,
-          cells,
-          originalFflzValue: '',
-          currentFflzValue: String(qty),
-          originalFullUpcValue: '',
-          currentFullUpcValue: scannedFull,
-          isModified: true,
-          isFullUpcModified: true,
-          isNewRow: true,
-          validationError: null
-        });
-
-        this.appendWorkbookAudit(this.activeWorkbookTabIndex, {
-          id: `newrow-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString(),
-          sheetName: activeSheet.sheetName,
-          cellAddress: `Row ${nextRowNumber}`,
-          previousValue: '(Unindexed Barcode)',
-          newValue: `${itemName} | Qty=${qty} | Barcode=${scannedFull}`,
-          operation: 'NEW_ROW_ADDED'
-        });
-        this.recordInventoryHistory({
-          workbookIdx: this.activeWorkbookTabIndex,
-          sheetName: activeSheet.sheetName, rowNumber: nextRowNumber, itemName,
-          barcode: scannedFull, previousQuantity: 0, newQuantity: Number(qty),
-          quantityChange: Number(qty), action: 'SUCCESSFUL_NEW_INVENTORY_ITEM'
-        });
-        this.recordActivity('NEW_INVENTORY_ITEM', {
-          workbookIdx: this.activeWorkbookTabIndex, sheetIdx: this.activeSheetIdx, itemName, barcode: scannedFull,
-          sheetName: activeSheet.sheetName, rowNumber: nextRowNumber,
-          previousValue: 0, newValue: qty, quantityChange: qty, details: 'Added a new inventory row from an unindexed barcode.'
-        });
-
+        targetSheet.records.push({ rowNumber: nextRowNumber, cells, originalFflzValue: '', currentFflzValue: String(qty), originalFullUpcValue: '', currentFullUpcValue: scannedFull, isModified: true, isFullUpcModified: true, isNewRow: true, validationError: null });
+        targetSheet.maxRow = nextRowNumber;
+        targetSheet.maxCol = 4;
+        this.appendWorkbookAudit(this.activeWorkbookTabIndex, { id: `unknown-${Date.now()}`, timestamp: new Date().toLocaleTimeString(), sheetName: 'UNKNOWNS', cellAddress: `Row ${nextRowNumber}`, previousValue: '(New unmatched item)', newValue: `${scannedFull} | ${description} | ${price} | ${qty}`, operation: 'UNKNOWN_ITEM_ADDED' });
+        this.recordActivity('UNKNOWN_ITEM_ADDED', { workbookIdx: this.activeWorkbookTabIndex, sheetName: 'UNKNOWNS', rowNumber: nextRowNumber, itemName: description, barcode: scannedFull, newValue: qty, details: 'Added unmatched barcode item to the UNKNOWNS worksheet.' }, { category: 'inventory', affectsWorkbook: true });
         this.notFoundPrompt = null;
-        this.scannerStatus = 'MATCHED';
-        this.rebuildIndex();
+        this.scannerStatus = 'NOT_FOUND';
+        this.lastScanResult = { timestamp: new Date().toLocaleTimeString(), scannedFull, suffix: scannedFull.slice(-5), len: 0, notFound: true, addedToUnknowns: true };
         this.closeNewRowModal();
-        playScanSound('success');
+        this.rebuildIndex();
         this.renderAll();
-        this.showToast(`Added new row #${nextRowNumber} for barcode ${scannedFull} in "${activeSheet.sheetName}".`);
+        this.flushWorkspaceSave();
+        playScanSound('success');
+        this.showToast(`Added ${description} to UNKNOWNS (row ${nextRowNumber}).`, 'success');
       },
 
       async toggleCameraScanner() {
@@ -6765,9 +6914,70 @@
           const active = idx === this.activeWorkbookTabIndex;
           const edited = wb?.worksheets?.reduce((sum, ws) => sum + (ws.records || []).filter(r => r.isModified || r.isFullUpcModified || r.isNewRow).length, 0) || 0;
           const name = String(wb?.filename || `Workbook ${idx + 1}`);
-          return `<button type="button" class="workbook-tab ${active ? 'active' : ''}" onclick="app.switchWorkbookTab(${idx})" title="${escapeHtml(name)}" aria-current="${active ? 'page' : 'false'}"><i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 shrink-0"></i><span class="tab-name">${escapeHtml(name)}</span>${edited ? `<span class="tab-edited">${edited} edited</span>` : ''}</button>`;
+          return `<div class="workbook-tab ${active ? 'active' : ''}" title="${escapeHtml(name)}" aria-current="${active ? 'page' : 'false'}"><button type="button" class="workbook-tab-select" onclick="app.switchWorkbookTab(${idx})" aria-label="Open ${escapeHtml(name)}"><i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 shrink-0"></i><span class="tab-name">${escapeHtml(name)}</span>${edited ? `<span class="tab-edited">${edited} edited</span>` : ''}</button><button type="button" class="workbook-tab-close" onclick="event.stopPropagation();app.removeWorkbookTab(${idx})" title="Remove ${escapeHtml(name)}" aria-label="Remove workbook ${escapeHtml(name)}">×</button></div>`;
         }).join('') + `<button type="button" class="workbook-tab-add" onclick="document.getElementById('file-upload-input').click()"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Add files</button><button type="button" class="workbook-tab-add" onclick="document.getElementById('zip-upload-input').click()"><i data-lucide="file-archive" class="w-3.5 h-3.5"></i> Import ZIP</button>`;
         if (window.lucide) lucide.createIcons();
+      },
+
+      async removeWorkbookTab(index) {
+        const targetIndex = Number(index);
+        const books = Array.isArray(this.openWorkbooks) ? this.openWorkbooks : [];
+        if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= books.length) return;
+        const target = books[targetIndex];
+        const editedRows = target?.worksheets?.reduce((sum, ws) => sum + (ws.records || []).filter(r => r.isModified || r.isFullUpcModified || r.isNewRow).length, 0) || 0;
+        const hasPending = editedRows > 0 || !!target?._uisSession?.pendingExportChanges || (targetIndex === this.activeWorkbookTabIndex && !!this._pendingExportChanges);
+        const name = String(target?.filename || `Workbook ${targetIndex + 1}`);
+        const message = hasPending
+          ? `Remove "${name}" from this workspace? It has ${editedRows} edited row(s). Export it first if you need to keep those changes. Removing it does not delete the original file from your device.`
+          : `Remove "${name}" from this workspace? This does not delete the original file from your device.`;
+        if (!window.confirm(message)) return;
+        try {
+          this.captureActiveWorkbookSession();
+          if (this.workbook?.originalBuffer && (this._workspaceDirty || this._workspaceSaveTimer || this._workspaceSaveInFlight)) {
+            await this.flushWorkspaceSave();
+          }
+          const wasActive = targetIndex === this.activeWorkbookTabIndex;
+          books.splice(targetIndex, 1);
+          // Workbook-indexed activity and sale references must follow the shifted tab positions.
+          const rebaseIndex = entry => {
+            if (!entry || !Number.isInteger(Number(entry.workbookIdx))) return entry;
+            const oldIndex = Number(entry.workbookIdx);
+            if (oldIndex === targetIndex) return { ...entry, workbookIdx: null, workbookRemoved: true };
+            return oldIndex > targetIndex ? { ...entry, workbookIdx: oldIndex - 1 } : entry;
+          };
+          this.activityLogs = (this.activityLogs || []).map(rebaseIndex);
+          this.sales = (this.sales || []).map(rebaseIndex);
+          this.openWorkbooks = books;
+          this.undoStack = [];
+          this.redoStack = [];
+          this._gridSearchIndexedWorkbook = null; this._gridSearchCache = null; this._gridSearchMatchedRows = null;
+          if (!books.length) {
+            this.workbook = null;
+            this.activeWorkbookTabIndex = 0;
+            this.activeSheetIdx = 0;
+            this.headerRowOverrides = {};
+            this.auditLogs = [];
+            this._pendingExportChanges = false;
+            this._lastWorkbookExportAt = 0;
+            this.notFoundPrompt = null;
+            this.lastScanResult = null;
+            this.rebuildIndex();
+            await this.clearWorkspaceSnapshot();
+          } else {
+            if (wasActive) this.activeWorkbookTabIndex = Math.min(targetIndex, books.length - 1);
+            else if (targetIndex < this.activeWorkbookTabIndex) this.activeWorkbookTabIndex -= 1;
+            this.workbook = books[this.activeWorkbookTabIndex];
+            this.restoreActiveWorkbookSession(this.workbook);
+            this.activeSheetIdx = Math.min(this.activeSheetIdx || 0, Math.max(0, this.workbook.worksheets.length - 1));
+            this.rebuildIndex();
+            this.scheduleWorkspaceSave();
+            await this.flushWorkspaceSave();
+          }
+          this.renderAll();
+          this.showToast(`Removed "${name}" from the workspace.`);
+        } catch (error) {
+          this.showToast(`Could not remove workbook: ${error.message}`, 'error');
+        }
       },
 
       async switchWorkbookTab(index) {
@@ -6961,6 +7171,7 @@
                     <input id="scanned-item-qty-input" type="number" min="1" step="1" placeholder="1" value="" class="w-24 h-9 rounded-full bg-black border border-emerald-500/60 text-center font-mono text-base font-bold text-emerald-300 focus:outline-none px-2" />
                     <button type="button" onclick="app.handleSetScannedItemQty(document.getElementById('scanned-item-qty-input').value)" class="px-4 h-9 rounded-full bg-white hover:bg-neutral-200 text-black font-semibold text-xs transition cursor-pointer flex items-center gap-1"><i data-lucide="check" class="w-3.5 h-3.5 stroke-[2.5]"></i><span>Confirm</span></button>
                     <button type="button" onclick="app.openScannedRowInGrid()" class="ml-auto text-[11px] text-emerald-400 hover:underline cursor-pointer">Open in Sheet Grid →</button>
+                  ${this.notFoundPrompt ? `<button type="button" onclick="app.openNewRowModal('${escapeHtml(this.notFoundPrompt.scannedFull)}')" class="px-3 py-2 rounded-xl border border-amber-400/40 bg-amber-500/15 text-amber-200 text-xs font-semibold hover:bg-amber-500/25">+ Add scanned barcode to UNKNOWNS</button>` : ''}
                   </div>
                 </div>
               </div>
@@ -6977,12 +7188,12 @@
             notFoundEl.innerHTML = `
               <div class="flex items-center gap-2.5 text-xs sm:text-sm text-rose-200">
                 <i data-lucide="alert-circle" class="w-4 h-4 text-rose-400 shrink-0"></i>
-                <span>Not in inventory: <strong class="font-mono">${escapeHtml(this.notFoundPrompt.scannedFull)}</strong></span>
+                <span>${escapeHtml(this.notFoundPrompt.reason || 'No exact barcode match was found.')} Scanned: <strong class="font-mono">${escapeHtml(this.notFoundPrompt.scannedFull)}</strong>. Add it to UNKNOWNS?</span>
               </div>
               <div class="flex items-center gap-2">
                 <button onclick="app.openNewRowModal('${escapeHtml(this.notFoundPrompt.scannedFull)}')" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-white text-black hover:bg-neutral-200 transition cursor-pointer">
                   <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-                  <span>Add to "${escapeHtml(activeSheet?.sheetName || 'Sheet')}"</span>
+                  <span>Add to "UNKNOWNS"</span>
                 </button>
                 <button onclick="app.closeScanResultAndResumeCamera()" class="text-rose-300 hover:text-white p-1 cursor-pointer"><i data-lucide="x" class="w-4 h-4"></i></button>
               </div>
@@ -7682,9 +7893,22 @@
         const bottomSpacerHeight = Math.max(0, metrics.total - renderedEnd);
         const bottomSpacerHtml = bottomSpacerHeight > 0 ? `<tr aria-hidden="true"><td colspan="${orderedHeaders.length + 1}" style="height:${bottomSpacerHeight}px;padding:0;border:0;"></td></tr>` : '';
 
+        const isUnknownsSheet = String(activeSheet.sheetName || '').trim().toUpperCase() === 'UNKNOWNS';
+        const unknownsColumnWidths = new Map();
+        if (isUnknownsSheet) {
+          // Size each UNKNOWNS column from its longest header/cell value so
+          // every value remains on a single visible line in the worksheet grid.
+          orderedHeaders.forEach(h => {
+            const values = [String(h.name ?? '')];
+            (activeSheet.records || []).forEach(record => values.push(String(record.cells?.[h.colIndex]?.value ?? '')));
+            const longest = values.reduce((max, value) => Math.max(max, value.length), 0);
+            unknownsColumnWidths.set(h.colIndex, Math.max(110, Math.ceil(longest * 8.2 + 28)));
+          });
+        }
         const columnWidthPx = new Map(orderedHeaders.map(h => {
           const width = Number(activeSheet.columnWidths?.[h.colIndex - 1]);
-          return [h.colIndex, Math.max(1, Math.min(2048, ((width > 0 ? width : (activeSheet.defaultColWidth || 8.43)) * 7 + 5)))];
+          const standardWidth = Math.max(1, Math.min(2048, ((width > 0 ? width : (activeSheet.defaultColWidth || 8.43)) * 7 + 5)));
+          return [h.colIndex, isUnknownsSheet ? (unknownsColumnWidths.get(h.colIndex) || standardWidth) : standardWidth];
         }));
         const freezeCount = Math.max(0, Number(activeSheet.freezePane?.xSplit) || 0);
         const stickyOffsetFor = colIndex => {
@@ -7709,7 +7933,7 @@
             <th draggable="true" ondragstart="app.handleGridColumnDragStart(event, ${h.colIndex})" ondragover="app.handleGridColumnDragOver(event)" ondragleave="app.handleGridColumnDragLeave(event)" ondrop="app.handleGridColumnDrop(event, ${h.colIndex})" ondragend="app.handleGridColumnDragEnd()" style="${sourceStyle};width:${widthPx}px;min-width:${widthPx}px;max-width:${widthPx}px;${stickyStyle}${hiddenColumn ? 'display:none;' : ''}" class="uis-grid-draggable-header select-none">
               <div style="position:relative;width:100%;min-height:28px;padding:3px 22px 3px 3px;text-align:inherit;">
                 <span style="display:block;font-size:9px;opacity:.72;">COL ${h.colLetter}</span>
-                <span style="display:block;font-weight:600;">${escapeHtml(h.name)}</span>
+                <span style="display:block;font-weight:600;${isUnknownsSheet ? 'white-space:nowrap;' : ''}">${escapeHtml(h.name)}</span>
                 <span class="uis-grid-column-move" style="position:absolute;right:1px;top:1px;display:flex;gap:1px;">
                   <button type="button" onclick="event.stopPropagation();app.shiftGridColumn(${h.colIndex}, -1)" ${displayIndex === 0 ? 'disabled' : ''}>‹</button>
                   <button type="button" onclick="event.stopPropagation();app.shiftGridColumn(${h.colIndex}, 1)" ${displayIndex === orderedHeaders.length - 1 ? 'disabled' : ''}>›</button>
@@ -7766,13 +7990,13 @@
             const mergedBorder = mergeRange ? salesExcelMergedBorderCss(activeSheet, mergeRange, this.workbook.styles, activeSheet.showGridLines !== false) : '';
             const style = `${cellStyle};${cellWidthStyle};${mergedBorder}`;
             if (isTargetFflz) {
-              return `<td${mergeAttr} style="${style}"><div style="position:relative;width:100%;"><input aria-label="Quantity ${h.colLetter}${rowNumber}" type="text" ${isLocked ? 'disabled' : ''} value="${escapeHtml(cellValue)}" onchange="app.handleCellEdit(${rowNumber}, this.value)" style="display:block;width:100%;min-width:0;box-sizing:border-box;padding:0 22px 0 0;margin:0;border:0;outline-offset:-2px;background:transparent;color:inherit;font:inherit;text-align:${cellTextAlign} !important;vertical-align:inherit;"/><button type="button" ${isLocked ? 'disabled' : ''} onclick="app.handleCellEdit(${rowNumber}, String((Number('${escapeHtml(cellValue)}') || 0) + 1))" title="Increase quantity" style="position:absolute;right:1px;top:50%;transform:translateY(-50%);width:18px;height:18px;line-height:16px;padding:0;border:0;border-radius:3px;background:rgba(100,116,139,.24);color:inherit;font-size:12px;">+</button></div></td>`;
+              return `<td${mergeAttr} style="${style}"><div style="position:relative;width:100%;"><input aria-label="Quantity ${h.colLetter}${rowNumber}" type="text" ${isLocked ? 'disabled' : ''} value="${escapeHtml(cellValue)}" onchange="app.handleCellEdit(${rowNumber}, this.value)" style="display:block;width:100%;min-width:0;box-sizing:border-box;padding:0 22px 0 0;margin:0;border:0;outline-offset:-2px;background:transparent;color:inherit;font:inherit;text-align:${cellTextAlign} !important;vertical-align:inherit;${isUnknownsSheet ? 'white-space:nowrap;' : ''}"/><button type="button" ${isLocked ? 'disabled' : ''} onclick="app.handleCellEdit(${rowNumber}, String((Number('${escapeHtml(cellValue)}') || 0) + 1))" title="Increase quantity" style="position:absolute;right:1px;top:50%;transform:translateY(-50%);width:18px;height:18px;line-height:16px;padding:0;border:0;border-radius:3px;background:rgba(100,116,139,.24);color:inherit;font-size:12px;">+</button></div></td>`;
             }
             if (isTargetFullUpc) {
-              return `<td${mergeAttr} style="${style}"><input aria-label="Barcode ${h.colLetter}${rowNumber}" type="text" ${isLocked ? 'disabled' : ''} value="${escapeHtml(cellValue || '')}" onchange="app.handleFullUpcEdit(${rowNumber}, this.value)" style="display:block;width:100%;min-width:0;box-sizing:border-box;padding:0;margin:0;border:0;outline-offset:-2px;background:transparent;color:inherit;font:inherit;text-align:${cellTextAlign} !important;vertical-align:inherit;"/></td>`;
+              return `<td${mergeAttr} style="${style}"><input aria-label="Barcode ${h.colLetter}${rowNumber}" type="text" ${isLocked ? 'disabled' : ''} value="${escapeHtml(cellValue || '')}" onchange="app.handleFullUpcEdit(${rowNumber}, this.value)" style="display:block;width:100%;min-width:0;box-sizing:border-box;padding:0;margin:0;border:0;outline-offset:-2px;background:transparent;color:inherit;font:inherit;text-align:${cellTextAlign} !important;vertical-align:inherit;${isUnknownsSheet ? 'white-space:nowrap;' : ''}"/></td>`;
             }
             const rawText = salesExcelFormatValue(cellValue, cellStyleId, this.workbook.styles, cellType);
-            return `<td${mergeAttr} style="${style}"><span style="display:block;width:100%;text-align:${cellTextAlign} !important;">${escapeHtml(rawText)}</span></td>`;
+            return `<td${mergeAttr} style="${style}"><span style="display:block;width:100%;${isUnknownsSheet ? 'white-space:nowrap;' : ''}text-align:${cellTextAlign} !important;">${escapeHtml(rawText)}</span></td>`;
           }).join('');
           const rowStyleId = activeSheet.rowStyles?.[rowNumber - 1];
           const rowCss = rowStyleId !== undefined ? salesExcelCellCss(rowStyleId, this.workbook.styles, activeSheet.showGridLines !== false) : '';
@@ -9998,6 +10222,15 @@
                 </div>
               `).join('')}
             </div>
+            ${this.notFoundPrompt ? `
+              <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3">
+                <div class="min-w-0 text-xs text-amber-100">
+                  <div class="font-semibold">Partial barcode match (${Number(this.notFoundPrompt.matchedDigits || d.len || 0)} consecutive trailing digits)</div>
+                  <div class="mt-1 text-amber-200/80">Scanned barcode: <span class="font-mono break-all">${escapeHtml(this.notFoundPrompt.scannedFull)}</span></div>
+                </div>
+                <button type="button" onclick="app.openNewRowModal('${escapeHtml(this.notFoundPrompt.scannedFull)}')" class="shrink-0 rounded-xl bg-amber-400 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-300">+ Add item to UNKNOWNS</button>
+              </div>
+            ` : ''}
             <div class="flex justify-end pt-2"><button onclick="app.closeScanResultAndResumeCamera()" class="px-4 py-2 rounded-lg text-xs bg-slate-800 text-slate-300">Cancel</button></div>
           </div>
         `;
